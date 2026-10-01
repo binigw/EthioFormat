@@ -35,6 +35,9 @@ backend/storage_temp/
 storage_temp/
 *.pdf
 preview_images.json
+uploads/
+.config/
+.npm/
 
 # Environment Variables & Secrets
 .env
