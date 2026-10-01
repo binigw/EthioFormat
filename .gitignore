@@ -29,6 +29,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.cache/
 
 # Temporary and Session Storage
 backend/storage_temp/
