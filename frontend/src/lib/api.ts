@@ -1,6 +1,6 @@
 import { PreviewResponse, PaymentInitiationResponse, PaymentVerificationResponse, CustomFormattingRules } from "@/types";
 
-const API_BASE = "/api/backend";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://ethioformat.onrender.com/api";
 
 export async function uploadAndPreviewThesis(
   file: File,

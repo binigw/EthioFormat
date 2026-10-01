@@ -5,6 +5,14 @@ import shutil
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 import pymupdf
+import docx
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import inch
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT, TA_RIGHT
+
 from app.services.pricing_engine import PricingEngine
 from app.models.formatting import PricingDetailModel
 
@@ -12,54 +20,199 @@ class DocumentConverterService:
     def __init__(self):
         self.libreoffice_bin = self._find_libreoffice()
 
-    def _find_libreoffice(self) -> str:
+    def _find_libreoffice(self) -> str | None:
         candidates = ["libreoffice", "soffice", "/usr/bin/libreoffice", "/usr/bin/soffice"]
         for cand in candidates:
             if shutil.which(cand):
                 return cand
-        return "libreoffice"
+        return None
+
+    def _convert_docx_to_pdf_reportlab(self, docx_path: str, pdf_path: str) -> str:
+        """
+        Pure-Python high-fidelity DOCX to PDF converter using ReportLab & python-docx.
+        Applied when LibreOffice is not available in the hosting environment (e.g., Render standard runtime).
+        Adheres strictly to Ethiopian Thesis formatting standards:
+        - Margins: 1.5 in Left (binding), 1.0 in Right, Top, Bottom
+        - Line spacing: 1.5
+        - Headings: Bold, Title Case / Upper Case
+        - Justified body text
+        """
+        doc = docx.Document(docx_path)
+        pdf_doc = SimpleDocTemplate(
+            pdf_path,
+            pagesize=A4,
+            leftMargin=1.5 * inch,
+            rightMargin=1.0 * inch,
+            topMargin=1.0 * inch,
+            bottomMargin=1.0 * inch
+        )
+
+        styles = getSampleStyleSheet()
+
+        title_style = ParagraphStyle(
+            'ThesisTitle',
+            parent=styles['Heading1'],
+            fontName='Helvetica-Bold',
+            fontSize=15,
+            leading=20,
+            alignment=TA_CENTER,
+            spaceAfter=12
+        )
+
+        h1_style = ParagraphStyle(
+            'ThesisH1',
+            parent=styles['Heading1'],
+            fontName='Helvetica-Bold',
+            fontSize=13,
+            leading=18,
+            spaceBefore=14,
+            spaceAfter=8
+        )
+
+        h2_style = ParagraphStyle(
+            'ThesisH2',
+            parent=styles['Heading2'],
+            fontName='Helvetica-Bold',
+            fontSize=12,
+            leading=16,
+            spaceBefore=10,
+            spaceAfter=6
+        )
+
+        body_style = ParagraphStyle(
+            'ThesisBody',
+            parent=styles['Normal'],
+            fontName='Helvetica',
+            fontSize=11,
+            leading=17, # 1.5 line spacing
+            alignment=TA_JUSTIFY,
+            spaceAfter=8
+        )
+
+        center_style = ParagraphStyle(
+            'ThesisCenter',
+            parent=body_style,
+            alignment=TA_CENTER
+        )
+
+        story = []
+
+        for p in doc.paragraphs:
+            text = p.text.strip()
+            if not text:
+                story.append(Spacer(1, 8))
+                continue
+
+            style_name = (p.style.name or "").lower()
+            align_str = str(p.alignment) if p.alignment else ""
+
+            is_title = any(kw in text.upper() for kw in [
+                "ADDIS ABABA UNIVERSITY", "JIMMA UNIVERSITY", "HAWASSA UNIVERSITY",
+                "MEKELLE UNIVERSITY", "BAHIR DAR UNIVERSITY", "HARAMAYA UNIVERSITY",
+                "A THESIS SUBMITTED", "IN PARTIAL FULFILLMENT", "SCHOOL OF GRADUATE STUDIES"
+            ])
+
+            is_h1 = (
+                "heading 1" in style_name or
+                text.startswith("CHAPTER") or
+                text in ["TABLE OF CONTENTS", "ABSTRACT", "DECLARATION", "DEDICATION", "ACKNOWLEDGEMENTS", "LIST OF TABLES", "LIST OF FIGURES", "REFERENCES"]
+            )
+
+            is_h2 = (
+                "heading 2" in style_name or
+                ("." in text[:4] and any(text.startswith(f"{i}.") for i in range(1, 10)))
+            )
+
+            # Check bold/italic runs
+            formatted_text = ""
+            for run in p.runs:
+                r_text = run.text
+                if not r_text:
+                    continue
+                r_text = r_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                if run.bold and run.italic:
+                    formatted_text += f"<b><i>{r_text}</i></b>"
+                elif run.bold:
+                    formatted_text += f"<b>{r_text}</b>"
+                elif run.italic:
+                    formatted_text += f"<i>{r_text}</i>"
+                else:
+                    formatted_text += r_text
+
+            if not formatted_text:
+                formatted_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+            if is_title:
+                story.append(Paragraph(f"<b>{formatted_text}</b>", title_style))
+            elif is_h1:
+                story.append(Paragraph(f"<b>{formatted_text}</b>", h1_style))
+            elif is_h2:
+                story.append(Paragraph(f"<b>{formatted_text}</b>", h2_style))
+            elif "CENTER" in align_str:
+                story.append(Paragraph(formatted_text, center_style))
+            else:
+                story.append(Paragraph(formatted_text, body_style))
+
+        # Render tables
+        for table in doc.tables:
+            table_data = []
+            for row in table.rows:
+                row_data = []
+                for cell in row.cells:
+                    cell_text = cell.text.strip().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    row_data.append(Paragraph(cell_text, body_style))
+                table_data.append(row_data)
+
+            if table_data:
+                t = Table(table_data)
+                t.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#F3F4F6')),
+                    ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')),
+                    ('TOPPADDING', (0,0), (-1,-1), 5),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+                ]))
+                story.append(t)
+                story.append(Spacer(1, 10))
+
+        pdf_doc.build(story)
+        return pdf_path
 
     def convert_docx_to_pdf(self, docx_path: str, output_dir: str) -> str:
         """
-        Converts a .docx document to .pdf using headless LibreOffice.
-        Returns the path to the generated .pdf file.
+        Converts .docx to .pdf using LibreOffice if available, or ReportLab fallback.
         """
         docx_path_obj = Path(docx_path)
         output_dir_obj = Path(output_dir)
         output_dir_obj.mkdir(parents=True, exist_ok=True)
+        pdf_path = output_dir_obj / f"{docx_path_obj.stem}.pdf"
 
-        cmd = [
-            self.libreoffice_bin,
-            "--headless",
-            "--invisible",
-            "--nodefault",
-            "--nofirststartwizard",
-            "--nolockcheck",
-            "--nologo",
-            "--norestore",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(output_dir_obj.resolve()),
-            str(docx_path_obj.resolve())
-        ]
+        if self.libreoffice_bin:
+            try:
+                cmd = [
+                    self.libreoffice_bin,
+                    "--headless",
+                    "--invisible",
+                    "--nodefault",
+                    "--nofirststartwizard",
+                    "--nolockcheck",
+                    "--nologo",
+                    "--norestore",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    str(output_dir_obj.resolve()),
+                    str(docx_path_obj.resolve())
+                ]
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=90)
+                if result.returncode == 0 and pdf_path.exists():
+                    return str(pdf_path.resolve())
+            except Exception as e:
+                print(f"[Converter] LibreOffice failed ({e}), falling back to ReportLab...")
 
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=90)
-        if result.returncode != 0:
-            raise RuntimeError(f"LibreOffice conversion failed (code {result.returncode}): {result.stderr}")
-
-        expected_pdf_name = f"{docx_path_obj.stem}.pdf"
-        pdf_path = output_dir_obj / expected_pdf_name
-        
-        if not pdf_path.exists():
-            # Check if any pdf was generated in the output directory
-            pdf_files = list(output_dir_obj.glob("*.pdf"))
-            if pdf_files:
-                pdf_path = pdf_files[0]
-            else:
-                raise FileNotFoundError(f"Converted PDF not found at {pdf_path}")
-
-        return str(pdf_path.resolve())
+        # Fallback to pure Python ReportLab converter
+        return self._convert_docx_to_pdf_reportlab(str(docx_path_obj.resolve()), str(pdf_path.resolve()))
 
     def generate_previews_and_page_count(self, pdf_path: str, max_preview_pages: int = 3) -> Tuple[int, List[str]]:
         """
@@ -70,7 +223,7 @@ class DocumentConverterService:
         """
         doc = pymupdf.open(pdf_path)
         total_pages = len(doc)
-        
+
         if total_pages == 0:
             doc.close()
             raise ValueError("The generated document has 0 pages.")

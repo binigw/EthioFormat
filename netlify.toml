@@ -3,6 +3,7 @@
   command = "npm run build"
 
 [build.environment]
+  NEXT_PUBLIC_API_URL = "https://ethioformat.onrender.com/api"
   NEXT_PUBLIC_SUPABASE_URL = "https://biwooiuetypqmokhsscm.supabase.co"
   NEXT_PUBLIC_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJpd29vaXVldHlwcW1va2hzc2NtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3NjUxMDksImV4cCI6MjEwNjM0MTEwOX0.9bgCMuBNitg_A3YbHYwdQcmquKItWPeEqwVlHZ1eaQY"
 
