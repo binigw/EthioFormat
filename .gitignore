@@ -18,14 +18,10 @@ __pycache__/
 *.so
 .Python
 env/
-build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
 parts/
 sdist/
 var/
@@ -47,6 +43,7 @@ preview_images.json
 .env.test.local
 .env.production.local
 *.pem
+.sudo_as_admin_successful
 
 # IDE & OS Files
 .DS_Store
@@ -57,4 +54,3 @@ preview_images.json
 *.sw?
 .vscode/
 .idea/
-.sudo_as_admin_successful
