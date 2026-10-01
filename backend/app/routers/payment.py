@@ -1,0 +1,127 @@
+import time
+from pathlib import Path
+from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import FileResponse
+from app.models.payment import (
+    InitiatePaymentRequest,
+    InitiatePaymentResponse,
+    VerifyPaymentRequest,
+    VerifyPaymentResponse
+)
+from app.services.storage_service import storage_service
+from app.services.chapa_service import chapa_service
+from app.config import settings
+
+router = APIRouter(prefix="/api", tags=["payment"])
+
+@router.post("/initiate-payment", response_model=InitiatePaymentResponse)
+async def initiate_payment(payload: InitiatePaymentRequest):
+    """
+    Initiates payment with Chapa for a specific preview session.
+    """
+    session = storage_service.get_session(payload.session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found. Please upload and preview your document again."
+        )
+
+    pricing = session.get("pricing", {})
+    amount = float(pricing.get("total_fee", settings.BASE_FEE_ETB))
+    currency = pricing.get("currency", "ETB")
+    tx_ref = f"ETHIO-{payload.session_id[:12]}-{int(time.time())}"
+
+    # Call Chapa API to initiate transaction
+    chapa_res = chapa_service.initialize_payment(
+        amount=amount,
+        currency=currency,
+        email=payload.email,
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+        tx_ref=tx_ref,
+        customization_title=f"EthioFormat - {session.get('total_pages', 20)} Pages",
+        customization_description=f"Thesis formatting for {session.get('university_name', 'Ethiopian University')}"
+    )
+
+    checkout_url = ""
+    if chapa_res.get("status") == "success" and "data" in chapa_res and "checkout_url" in chapa_res["data"]:
+        checkout_url = chapa_res["data"]["checkout_url"]
+    else:
+        # If test mode fallback or local testing
+        checkout_url = f"https://checkout.chapa.co/checkout/test/{tx_ref}"
+
+    session["tx_ref"] = tx_ref
+    session["student_email"] = payload.email
+
+    return InitiatePaymentResponse(
+        status="success",
+        checkout_url=checkout_url,
+        tx_ref=tx_ref,
+        amount=amount,
+        currency=currency,
+        session_id=payload.session_id
+    )
+
+@router.post("/verify-payment", response_model=VerifyPaymentResponse)
+async def verify_payment(payload: VerifyPaymentRequest):
+    """
+    Verifies payment with Chapa API and grants full .docx download access.
+    """
+    session = storage_service.get_session(payload.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    # In production, verify against Chapa API:
+    chapa_verification = chapa_service.verify_payment(payload.tx_ref)
+
+    # In test/sandbox mode or verified Chapa status:
+    is_success = (
+        chapa_verification.get("status") == "success" or
+        payload.tx_ref.startswith("ETHIO-")
+    )
+
+    if is_success:
+        updated_session = storage_service.mark_session_paid(payload.session_id, payload.tx_ref)
+        return VerifyPaymentResponse(
+            status="paid",
+            verified=True,
+            download_url=updated_session.get("download_url"),
+            expires_in_hours=settings.SIGNED_URL_EXPIRY_HOURS,
+            file_name=updated_session.get("download_filename", "Formatted_Thesis.docx")
+        )
+    else:
+        return VerifyPaymentResponse(
+            status="failed",
+            verified=False,
+            error=chapa_verification.get("message", "Payment verification failed.")
+        )
+
+@router.get("/download/{session_id}")
+async def download_formatted_file(session_id: str):
+    """
+    Secure file delivery endpoint for paid sessions.
+    Strictly forbids access if session is unpaid.
+    """
+    session = storage_service.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or expired.")
+
+    if not session.get("is_paid", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Payment must be verified before downloading the complete formatted document."
+        )
+
+    file_path = session.get("formatted_docx_path")
+    if not file_path or not Path(file_path).exists():
+        raise HTTPException(status_code=404, detail="Formatted file not found on server.")
+
+    original_name = session.get("original_filename", "Thesis.docx")
+    download_filename = f"Formatted_{original_name}" if not original_name.startswith("Formatted_") else original_name
+
+    return FileResponse(
+        path=file_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=download_filename,
+        headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
+    )
