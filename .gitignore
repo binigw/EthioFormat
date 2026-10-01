@@ -57,3 +57,4 @@ preview_images.json
 *.sw?
 .vscode/
 .idea/
+.sudo_as_admin_successful
