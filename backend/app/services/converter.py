@@ -3,9 +3,11 @@ import subprocess
 import base64
 import shutil
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 import pymupdf
 import docx
+from docx.text.paragraph import Paragraph as DocxParagraph
+from docx.table import Table as DocxTable
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -30,7 +32,8 @@ class DocumentConverterService:
     def _convert_docx_to_pdf_reportlab(self, docx_path: str, pdf_path: str) -> str:
         """
         Pure-Python high-fidelity DOCX to PDF converter using ReportLab & python-docx.
-        Applied when LibreOffice is not available in the hosting environment (e.g., Render standard runtime).
+        Applied when LibreOffice is not available in the hosting environment.
+        Features intelligent table unwrapping to prevent ReportLab LayoutError on large text cells.
         Adheres strictly to Ethiopian Thesis formatting standards:
         - Margins: 1.5 in Left (binding), 1.0 in Right, Top, Bottom
         - Line spacing: 1.5
@@ -38,6 +41,9 @@ class DocumentConverterService:
         - Justified body text
         """
         doc = docx.Document(docx_path)
+        # Printable width for A4 (595.27 pt width - 2.5 in margins)
+        printable_width = 595.27 - (1.5 + 1.0) * 72.0
+
         pdf_doc = SimpleDocTemplate(
             pdf_path,
             pagesize=A4,
@@ -73,7 +79,7 @@ class DocumentConverterService:
             'ThesisH2',
             parent=styles['Heading2'],
             fontName='Helvetica-Bold',
-            fontSize=12,
+            fontSize=11.5,
             leading=16,
             spaceBefore=10,
             spaceAfter=6
@@ -95,86 +101,144 @@ class DocumentConverterService:
             alignment=TA_CENTER
         )
 
-        story = []
+        table_cell_style = ParagraphStyle(
+            'TableCell',
+            parent=styles['Normal'],
+            fontName='Helvetica',
+            fontSize=9.5,
+            leading=13,
+            alignment=TA_LEFT
+        )
 
-        for p in doc.paragraphs:
+        table_header_style = ParagraphStyle(
+            'TableHeader',
+            parent=table_cell_style,
+            fontName='Helvetica-Bold'
+        )
+
+        def format_single_paragraph(p: DocxParagraph) -> Optional[Any]:
             text = p.text.strip()
             if not text:
-                story.append(Spacer(1, 8))
-                continue
+                return Spacer(1, 6)
 
-            style_name = (p.style.name or "").lower()
-            align_str = str(p.alignment) if p.alignment else ""
+            style_name = (p.style.name or '').lower() if p.style else ''
+            align_str = str(p.alignment) if p.alignment else ''
 
             is_title = any(kw in text.upper() for kw in [
-                "ADDIS ABABA UNIVERSITY", "JIMMA UNIVERSITY", "HAWASSA UNIVERSITY",
-                "MEKELLE UNIVERSITY", "BAHIR DAR UNIVERSITY", "HARAMAYA UNIVERSITY",
-                "A THESIS SUBMITTED", "IN PARTIAL FULFILLMENT", "SCHOOL OF GRADUATE STUDIES"
+                'ADDIS ABABA UNIVERSITY', 'JIMMA UNIVERSITY', 'HAWASSA UNIVERSITY',
+                'MEKELLE UNIVERSITY', 'BAHIR DAR UNIVERSITY', 'HARAMAYA UNIVERSITY',
+                'A THESIS SUBMITTED', 'IN PARTIAL FULFILLMENT', 'SCHOOL OF GRADUATE STUDIES'
             ])
 
             is_h1 = (
-                "heading 1" in style_name or
-                text.startswith("CHAPTER") or
-                text in ["TABLE OF CONTENTS", "ABSTRACT", "DECLARATION", "DEDICATION", "ACKNOWLEDGEMENTS", "LIST OF TABLES", "LIST OF FIGURES", "REFERENCES"]
+                'heading 1' in style_name or
+                text.startswith('CHAPTER') or
+                text in ['TABLE OF CONTENTS', 'ABSTRACT', 'DECLARATION', 'DEDICATION', 'ACKNOWLEDGEMENTS', 'LIST OF TABLES', 'LIST OF FIGURES', 'REFERENCES', 'APPENDIX']
             )
 
             is_h2 = (
-                "heading 2" in style_name or
-                ("." in text[:4] and any(text.startswith(f"{i}.") for i in range(1, 10)))
+                'heading 2' in style_name or
+                ('.' in text[:4] and any(text.startswith(f'{i}.') for i in range(1, 10)))
             )
 
-            # Check bold/italic runs
-            formatted_text = ""
+            formatted_text = ''
             for run in p.runs:
                 r_text = run.text
                 if not r_text:
                     continue
-                r_text = r_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                r_text = r_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                 if run.bold and run.italic:
-                    formatted_text += f"<b><i>{r_text}</i></b>"
+                    formatted_text += f'<b><i>{r_text}</i></b>'
                 elif run.bold:
-                    formatted_text += f"<b>{r_text}</b>"
+                    formatted_text += f'<b>{r_text}</b>'
                 elif run.italic:
-                    formatted_text += f"<i>{r_text}</i>"
+                    formatted_text += f'<i>{r_text}</i>'
                 else:
                     formatted_text += r_text
 
             if not formatted_text:
-                formatted_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                formatted_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
             if is_title:
-                story.append(Paragraph(f"<b>{formatted_text}</b>", title_style))
+                return Paragraph(f'<b>{formatted_text}</b>', title_style)
             elif is_h1:
-                story.append(Paragraph(f"<b>{formatted_text}</b>", h1_style))
+                return Paragraph(f'<b>{formatted_text}</b>', h1_style)
             elif is_h2:
-                story.append(Paragraph(f"<b>{formatted_text}</b>", h2_style))
-            elif "CENTER" in align_str:
-                story.append(Paragraph(formatted_text, center_style))
+                return Paragraph(f'<b>{formatted_text}</b>', h2_style)
+            elif 'CENTER' in align_str:
+                return Paragraph(formatted_text, center_style)
             else:
-                story.append(Paragraph(formatted_text, body_style))
+                return Paragraph(formatted_text, body_style)
 
-        # Render tables
-        for table in doc.tables:
-            table_data = []
+        def should_unwrap_table(table: DocxTable) -> bool:
+            """
+            Checks if a table is used purely for visual layout or contains extensive text
+            that would exceed the ReportLab page frame height (~650 points), causing LayoutError.
+            """
+            if not table.rows or not table.columns:
+                return True
+            total_cells = len(table.rows) * len(table.columns)
+            if total_cells <= 2:
+                return True
             for row in table.rows:
-                row_data = []
                 for cell in row.cells:
-                    cell_text = cell.text.strip().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    row_data.append(Paragraph(cell_text, body_style))
-                table_data.append(row_data)
+                    cell_text_len = sum(len(p.text) for p in cell.paragraphs)
+                    if cell_text_len > 350 or len(cell.paragraphs) > 3:
+                        return True
+            return False
 
-            if table_data:
-                t = Table(table_data)
-                t.setStyle(TableStyle([
-                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#F3F4F6')),
-                    ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                    ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')),
-                    ('TOPPADDING', (0,0), (-1,-1), 5),
-                    ('BOTTOMPADDING', (0,0), (-1,-1), 5),
-                ]))
-                story.append(t)
-                story.append(Spacer(1, 10))
+        story = []
+
+        # Iterate elements in natural document order
+        for child in doc.element.body:
+            tag = child.tag.split('}')[-1]
+            if tag == 'p':
+                p = DocxParagraph(child, doc)
+                flowable = format_single_paragraph(p)
+                if flowable:
+                    story.append(flowable)
+            elif tag == 'tbl':
+                tbl = DocxTable(child, doc)
+                if should_unwrap_table(tbl):
+                    # Unwrap table cells into main story flowables
+                    for row in tbl.rows:
+                        for cell in row.cells:
+                            for p in cell.paragraphs:
+                                flowable = format_single_paragraph(p)
+                                if flowable:
+                                    story.append(flowable)
+                else:
+                    # Render standard compact data table with column widths and pagination
+                    num_cols = len(tbl.columns)
+                    col_width = printable_width / max(1, num_cols)
+                    table_data = []
+                    for row_idx, row in enumerate(tbl.rows):
+                        row_data = []
+                        for cell in row.cells:
+                            cell_p_list = []
+                            for cp in cell.paragraphs:
+                                ctext = cp.text.strip().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                                if ctext:
+                                    st = table_header_style if row_idx == 0 else table_cell_style
+                                    cell_p_list.append(Paragraph(ctext, st))
+                            if not cell_p_list:
+                                cell_p_list = [Paragraph('', table_cell_style)]
+                            row_data.append(cell_p_list)
+                        table_data.append(row_data)
+
+                    if table_data:
+                        t = Table(table_data, colWidths=[col_width] * num_cols, splitByRow=1, repeatRows=1)
+                        t.setStyle(TableStyle([
+                            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#F3F4F6')),
+                            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D1D5DB')),
+                            ('TOPPADDING', (0,0), (-1,-1), 4),
+                            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+                        ]))
+                        story.append(Spacer(1, 6))
+                        story.append(t)
+                        story.append(Spacer(1, 8))
 
         pdf_doc.build(story)
         return pdf_path
