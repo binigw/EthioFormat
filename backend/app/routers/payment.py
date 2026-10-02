@@ -1,4 +1,5 @@
 import time
+import re
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import FileResponse
@@ -14,11 +15,20 @@ from app.config import settings
 
 router = APIRouter(prefix="/api", tags=["payment"])
 
+# Safe alphanumeric + underscore validator to prevent traversal/injections
+SAFE_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]+$")
+
 @router.post("/initiate-payment", response_model=InitiatePaymentResponse)
 async def initiate_payment(payload: InitiatePaymentRequest):
     """
     Initiates payment with Chapa for a specific preview session.
     """
+    if not SAFE_ID_REGEX.match(payload.session_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid session ID format."
+        )
+
     session = storage_service.get_session(payload.session_id)
     if not session:
         raise HTTPException(
@@ -66,19 +76,37 @@ async def initiate_payment(payload: InitiatePaymentRequest):
 async def verify_payment(payload: VerifyPaymentRequest):
     """
     Verifies payment with Chapa API and grants full .docx download access.
+    Strictly verifies payment status with Chapa Gateway before releasing file.
     """
+    if not SAFE_ID_REGEX.match(payload.session_id) or not SAFE_ID_REGEX.match(payload.tx_ref):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid parameter format."
+        )
+
     session = storage_service.get_session(payload.session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
 
-    # In production, verify against Chapa API:
+    # Prevent replay or mismatch attacks: verify tx_ref belongs to this session
+    session_tx_ref = session.get("tx_ref")
+    if session_tx_ref and session_tx_ref != payload.tx_ref:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transaction reference does not match this session."
+        )
+
+    # Verify directly with Chapa API
     chapa_verification = chapa_service.verify_payment(payload.tx_ref)
 
-    # In test/sandbox mode or verified Chapa status:
-    is_success = (
-        chapa_verification.get("status") == "success" or
-        payload.tx_ref.startswith("ETHIO-")
-    )
+    # Check if payment was genuinely successful
+    is_success = False
+    if chapa_verification.get("status") == "success":
+        # In production Chapa response contains data object
+        is_success = True
+    elif settings.DEBUG and payload.tx_ref.startswith("ETHIO-"):
+        # Allow sandbox simulation ONLY when DEBUG mode is explicitly enabled
+        is_success = True
 
     if is_success:
         updated_session = storage_service.mark_session_paid(payload.session_id, payload.tx_ref)
@@ -93,7 +121,7 @@ async def verify_payment(payload: VerifyPaymentRequest):
         return VerifyPaymentResponse(
             status="failed",
             verified=False,
-            error=chapa_verification.get("message", "Payment verification failed.")
+            error=chapa_verification.get("message", "Payment verification failed with Chapa gateway.")
         )
 
 @router.get("/download/{session_id}")
@@ -101,10 +129,14 @@ async def download_formatted_file(session_id: str):
     """
     Secure file delivery endpoint for paid sessions.
     Strictly forbids access if session is unpaid.
+    Guards against path traversal by validating session_id and resolving canonical paths.
     """
+    if not SAFE_ID_REGEX.match(session_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid session identifier.")
+
     session = storage_service.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found or expired.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or expired.")
 
     if not session.get("is_paid", False):
         raise HTTPException(
@@ -112,15 +144,24 @@ async def download_formatted_file(session_id: str):
             detail="Access denied. Payment must be verified before downloading the complete formatted document."
         )
 
-    file_path = session.get("formatted_docx_path")
-    if not file_path or not Path(file_path).exists():
-        raise HTTPException(status_code=404, detail="Formatted file not found on server.")
+    file_path_str = session.get("formatted_docx_path")
+    if not file_path_str:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Formatted file not registered.")
+
+    file_path = Path(file_path_str).resolve()
+    staging_base = Path(settings.STORAGE_STAGING_DIR).resolve()
+
+    # Ensure file is inside staging directory (prevents path traversal)
+    if not str(file_path).startswith(str(staging_base)) or not file_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Formatted file not found on server.")
 
     original_name = session.get("original_filename", "Thesis.docx")
-    download_filename = f"Formatted_{original_name}" if not original_name.startswith("Formatted_") else original_name
+    # Sanitize download file name to prevent header injection
+    safe_filename = re.sub(r'[^a-zA-Z0-9_.-]', '_', original_name)
+    download_filename = f"Formatted_{safe_filename}" if not safe_filename.startswith("Formatted_") else safe_filename
 
     return FileResponse(
-        path=file_path,
+        path=str(file_path),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=download_filename,
         headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}

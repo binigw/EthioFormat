@@ -12,12 +12,18 @@ app = FastAPI(
     description="EthioFormat — Automated Ethiopian Academic Thesis Formatting Backend"
 )
 
-# Enable CORS for Next.js preview & local environment
+# Allowed CORS origins
+allowed_origins = [
+    "https://ethioformat.netlify.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins if not settings.DEBUG else ["*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 

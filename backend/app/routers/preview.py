@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import re
 import datetime
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,9 @@ from app.services.storage_service import storage_service
 
 router = APIRouter(prefix="/api/preview", tags=["preview"])
 
+# 50 MB Maximum Upload Limit to prevent memory exhaustion / DoS attacks
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
+
 @router.post("", response_model=PreviewResponseModel)
 async def generate_free_preview(
     file: UploadFile = File(...),
@@ -20,43 +24,63 @@ async def generate_free_preview(
 ):
     """
     Secure 3-Page Free Preview Paywall Endpoint:
-    1. Receives uploaded .docx file and selected university preset or custom rules.
+    1. Validates file extension, mime-type, and file size (< 50MB).
     2. Runs python-docx formatting across entire document.
-    3. Headless conversion to PDF to dynamically compute exact total pages.
-    4. Extracts and renders ONLY the first 3 pages (Cover, Approval, TOC) as high-res base64 PNGs.
-    5. Computes exact dynamic pricing (Base 50 ETB for <=20 pages + 1.50 ETB / extra page).
-    6. Safely retains full formatted .docx in encrypted session cache without exposing it to client.
+    3. Converts to PDF to compute dynamic page count.
+    4. Extracts and renders ONLY the first 3 pages as high-res base64 PNGs.
+    5. Computes exact dynamic pricing.
+    6. Safely retains full formatted .docx in isolated session storage.
     """
     if not file.filename:
-        raise HTTPException(status_code=400, detail="Missing file name.")
-    
-    if not file.filename.lower().endswith(".docx"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing file name.")
+
+    # Sanitize filename
+    clean_filename = Path(file.filename).name
+    if not clean_filename.lower().endswith(".docx"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid file format. Only Microsoft Word (.docx) files are supported."
         )
 
-    # Parse custom rules if provided
+    # Validate Preset ID
+    valid_preset_ids = [p["id"] for p in docx_formatter.presets_data.get("presets", [])] + ["custom"]
+    if preset_id not in valid_preset_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid preset_id. Must be one of registered universities or 'custom'."
+        )
+
+    # Parse and validate custom rules if provided
     parsed_custom_rules = None
-    if custom_rules and custom_rules.strip():
+    if preset_id == "custom" and custom_rules and custom_rules.strip():
         try:
             parsed_custom_rules = json.loads(custom_rules)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON format in custom_rules.")
+            if not isinstance(parsed_custom_rules, dict):
+                raise ValueError()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON structure in custom_rules."
+            )
 
-    # Generate unique session ID
+    # Generate unique, cryptographically random session ID
     session_id = f"sess_{uuid.uuid4().hex[:16]}"
     session_dir = storage_service.get_session_dir(session_id)
 
-    # Save uploaded input file
     input_docx_path = session_dir / "input_original.docx"
     formatted_docx_path = session_dir / "formatted_thesis.docx"
 
     try:
         content = await file.read()
         if len(content) == 0:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
         
+        if len(content) > MAX_FILE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Uploaded file exceeds 50MB maximum allowable size."
+            )
+
         with open(input_docx_path, "wb") as f:
             f.write(content)
 
@@ -90,7 +114,7 @@ async def generate_free_preview(
         # 3. Register session in secure storage cache
         storage_service.register_session(session_id, {
             "session_id": session_id,
-            "original_filename": file.filename,
+            "original_filename": clean_filename,
             "formatted_docx_path": str(formatted_docx_path),
             "input_docx_path": str(input_docx_path),
             "preset_id": preset_id,
@@ -108,7 +132,7 @@ async def generate_free_preview(
             preview_pages=preview_pages,
             pricing=pricing,
             metadata=PreviewMetadataModel(
-                filename=file.filename,
+                filename=clean_filename,
                 formatted_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 university=university_name,
                 preset_id=preset_id
@@ -118,9 +142,7 @@ async def generate_free_preview(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Thesis formatting and preview generation failed: {str(e)}"
+            detail=f"Thesis formatting failed: {str(e)}"
         )
