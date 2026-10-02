@@ -2,7 +2,7 @@
 
 import React, { useRef, useState } from "react";
 import { formatFileSize } from "@/lib/utils";
-import { FileUp, FileText, CheckCircle2, AlertCircle, X, Sparkles } from "lucide-react";
+import { FileUp, FileText, CheckCircle2, AlertCircle, X } from "lucide-react";
 
 interface FileUploadProps {
   file: File | null;
@@ -21,8 +21,8 @@ export function FileUpload({ file, onFileSelect, disabled = false }: FileUploadP
       setErrorMessage("Only Microsoft Word (.docx) files are supported for thesis formatting.");
       return;
     }
-    if (selectedFile.size > 25 * 1024 * 1024) {
-      setErrorMessage("File exceeds 25 MB limit. Please select a smaller .docx file.");
+    if (selectedFile.size > 50 * 1024 * 1024) {
+      setErrorMessage("File exceeds 50 MB limit. Please select a smaller .docx file.");
       return;
     }
     onFileSelect(selectedFile);
@@ -51,26 +51,6 @@ export function FileUpload({ file, onFileSelect, disabled = false }: FileUploadP
     }
   };
 
-  const loadSampleDocx = async () => {
-    try {
-      const response = await fetch("/api/backend/sample-thesis");
-      if (response.ok) {
-        const blob = await response.blob();
-        const sampleFile = new File([blob], "Sample_AAU_MSc_Thesis.docx", {
-          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        });
-        validateAndSetFile(sampleFile);
-      }
-    } catch {
-      // Create local fallback if endpoint unavailable
-      const fallbackBlob = new Blob(["Sample Thesis Content"], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
-      const sampleFile = new File([fallbackBlob], "Sample_AAU_MSc_Thesis.docx", {
-        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      });
-      validateAndSetFile(sampleFile);
-    }
-  };
-
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
@@ -79,15 +59,6 @@ export function FileUpload({ file, onFileSelect, disabled = false }: FileUploadP
           <span>Upload Academic Thesis (.docx)</span>
           <span className="text-rose-500">*</span>
         </label>
-        <button
-          type="button"
-          onClick={loadSampleDocx}
-          disabled={disabled}
-          className="text-xs text-emerald-700 font-medium hover:text-emerald-800 flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 transition-colors"
-        >
-          <Sparkles className="h-3 w-3" />
-          <span>Use Sample AAU Thesis</span>
-        </button>
       </div>
 
       <input
@@ -122,7 +93,7 @@ export function FileUpload({ file, onFileSelect, disabled = false }: FileUploadP
             Click to upload or drag & drop your thesis (.docx)
           </div>
           <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-            Standard Ethiopian thesis formatting (.docx format, up to 25 MB).
+            Standard Ethiopian thesis formatting (.docx format, up to 50 MB).
           </p>
         </div>
       ) : (

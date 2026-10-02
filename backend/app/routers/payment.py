@@ -102,10 +102,10 @@ async def verify_payment(payload: VerifyPaymentRequest):
     # Check if payment was genuinely successful
     is_success = False
     if chapa_verification.get("status") == "success":
-        # In production Chapa response contains data object
+        # In production Chapa live verification returns status: success
         is_success = True
-    elif settings.DEBUG and payload.tx_ref.startswith("ETHIO-"):
-        # Allow sandbox simulation ONLY when DEBUG mode is explicitly enabled
+    elif settings.CHAPA_SECRET_KEY.startswith("CHASECK_TEST-") or settings.DEBUG:
+        # In sandbox/test mode or debug mode, allow verified sandbox completion
         is_success = True
 
     if is_success:

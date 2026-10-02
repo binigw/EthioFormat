@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { PaymentVerificationResponse } from "@/types";
-import { Download, CheckCircle2, ShieldCheck, Clock, FileCheck, ArrowLeft, Sparkles } from "lucide-react";
+import { Download, CheckCircle2, ShieldCheck, Clock, FileCheck, ArrowLeft } from "lucide-react";
 
 interface DownloadCardProps {
   paymentData: PaymentVerificationResponse;
@@ -27,10 +27,13 @@ export function DownloadCard({ paymentData, fileName, onReset }: DownloadCardPro
     return `${hrs.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
-  // Ensure download URL is properly routed through Next.js proxy if it is a relative API link
+  // Ensure download URL is properly resolved:
+  // 1. Supabase 24h signed URL (starts with http/https) -> used directly
+  // 2. Relative API link (/api/download/...) -> prepended with live backend base URL
+  const backendBase = (process.env.NEXT_PUBLIC_API_URL || "https://ethioformat.onrender.com/api").replace(/\/api\/?$/, "");
   let downloadUrl = paymentData.download_url || "#";
   if (downloadUrl.startsWith("/api/download/")) {
-    downloadUrl = downloadUrl.replace("/api/download/", "/api/backend/download/");
+    downloadUrl = `${backendBase}${downloadUrl}`;
   }
 
   return (
@@ -75,8 +78,10 @@ export function DownloadCard({ paymentData, fileName, onReset }: DownloadCardPro
         <div className="space-y-3">
           <a
             href={downloadUrl}
+            target="_blank"
+            rel="noopener noreferrer"
             download={paymentData.file_name || fileName}
-            className="w-full inline-flex items-center justify-center gap-3 py-4 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-base shadow-xl shadow-emerald-600/30 hover:shadow-emerald-600/50 hover:scale-[1.01] active:scale-[0.99] transition-all text-center"
+            className="w-full inline-flex items-center justify-center gap-3 py-4 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-base shadow-xl shadow-emerald-600/30 hover:shadow-emerald-600/50 hover:scale-[1.01] active:scale-[0.99] transition-all text-center cursor-pointer"
           >
             <Download className="h-5 w-5" />
             <span>Download Formatted Thesis (.docx)</span>
@@ -85,7 +90,7 @@ export function DownloadCard({ paymentData, fileName, onReset }: DownloadCardPro
           <button
             type="button"
             onClick={onReset}
-            className="w-full inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 text-sm font-semibold transition-colors"
+            className="w-full inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 text-sm font-semibold transition-colors cursor-pointer"
           >
             <ArrowLeft className="h-4 w-4" />
             <span>Format Another Thesis</span>
