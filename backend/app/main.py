@@ -1,15 +1,30 @@
 import os
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from app.config import settings
 from app.routers import presets, preview, payment
+from app.services.cbe_imap_service import cbe_imap_service
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start automated Gmail IMAP background poller
+    task = asyncio.create_task(
+        cbe_imap_service.start_background_loop(settings.IMAP_POLL_INTERVAL_SECONDS)
+    )
+    yield
+    # Shutdown: Cleanly terminate worker
+    cbe_imap_service.stop_background_loop()
+    task.cancel()
 
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="EthioFormat — Automated Ethiopian Academic Thesis Formatting Backend"
+    description="EthioFormat — Automated Ethiopian Academic Thesis Formatting Backend",
+    lifespan=lifespan
 )
 
 # Allowed CORS origins
@@ -32,7 +47,7 @@ app.include_router(presets.router)
 app.include_router(preview.router)
 app.include_router(payment.router)
 
-SAMPLE_DOCX = Path("/home/user/backend/sample_ethiopian_thesis.docx")
+SAMPLE_DOCX = Path(__file__).parent.parent / "sample_ethiopian_thesis.docx"
 
 @app.get("/api/sample-thesis")
 def get_sample_thesis():
@@ -52,5 +67,7 @@ def health_check():
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "base_fee": settings.BASE_FEE_ETB,
-        "base_pages": settings.BASE_PAGE_THRESHOLD
+        "base_pages": settings.BASE_PAGE_THRESHOLD,
+        "cbe_account": settings.CBE_ACCOUNT_NUMBER,
+        "imap_worker_active": cbe_imap_service.is_configured()
     }

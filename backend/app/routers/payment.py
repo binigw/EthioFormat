@@ -1,9 +1,10 @@
 import time
 import re
+import asyncio
 import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, status, Header, Request
+from fastapi import APIRouter, HTTPException, status, Header
 from fastapi.responses import FileResponse
 from app.models.payment import (
     InitiateCBEPaymentRequest,
@@ -17,11 +18,12 @@ from app.models.payment import (
 from app.services.storage_service import storage_service
 from app.services.pricing_engine import PricingEngine
 from app.services.cbe_email_parser import cbe_email_parser
+from app.services.cbe_imap_service import cbe_imap_service
 from app.config import settings
 
 router = APIRouter(prefix="/api", tags=["cbe_payment"])
 
-# Safe regex validator
+# Safe alphanumeric + underscore validator
 SAFE_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 # In-memory transaction registry fallback
@@ -110,7 +112,7 @@ async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
 async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     """
     Called by user from frontend to associate their entered CBE Transaction ID
-    with the current session and check if it has already been approved by Webhook.
+    with the current session and trigger an immediate Gmail IMAP / webhook check.
     """
     clean_ref = payload.transaction_ref.strip().upper()
     if not clean_ref or len(clean_ref) < 3:
@@ -160,6 +162,16 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     _local_transactions_db[clean_ref] = txn_record
     _local_transactions_db[payload.session_id] = txn_record
 
+    # Trigger immediate on-demand Gmail IMAP check if configured
+    if existing_status == "pending" and cbe_imap_service.is_configured():
+        try:
+            await asyncio.to_thread(cbe_imap_service.check_gmail_receipts)
+            # Re-check status if verified by immediate IMAP read
+            if session.get("is_paid", False) or _local_transactions_db.get(clean_ref, {}).get("status") == "approved":
+                existing_status = "approved"
+        except Exception as e:
+            print(f"[IMAP on-demand check notice] {e}")
+
     if existing_status == "approved" or session.get("is_paid", False):
         updated_session = storage_service.mark_session_paid(payload.session_id, clean_ref)
         return SubmitCBETransactionResponse(
@@ -177,7 +189,7 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
         session_id=payload.session_id,
         transaction_ref=clean_ref,
         amount_expected=amount_expected,
-        message="Transaction ID registered. Waiting for CBE payment confirmation webhook..."
+        message="Transaction ID registered. Checking Gmail IMAP receipts and awaiting confirmation..."
     )
 
 @router.post("/payment/cbe-email-webhook", response_model=CBEWebhookResponse)
@@ -187,38 +199,21 @@ async def cbe_email_webhook(
 ):
     """
     Automated CBE Email Webhook Endpoint for Make.com / Mailhooks:
-    1. Receives incoming CBE email JSON payload from Make.com Custom Mailhook / Gmail Forwarder.
+    1. Receives incoming CBE email JSON payload.
     2. Extracts Transaction ID, Amount, Payer Name, Account Number, and Date/Time via Regex.
     3. Matches with 'pending' session in Supabase / database.
     4. Validates amount_paid >= amount_expected.
     5. Updates status to 'approved' and generates 24-hour Supabase Signed Download URL.
     """
-    print("=" * 60)
-    print(f"[Make.com Webhook] Incoming CBE Email Notification at {datetime.datetime.now(datetime.timezone.utc)}")
-    print(f"[Make.com Webhook] Subject: {payload.subject}")
-    print(f"[Make.com Webhook] Sender: {payload.from_email}")
-
-    # Extract all fields
     raw_content = payload.body or payload.html or payload.text or payload.raw_content or ""
     parsed_meta = cbe_email_parser.parse_full_cbe_payload(
         raw_text=raw_content,
         subject=payload.subject
     )
 
-    # Use extracted or passed values
     final_txn_ref = (payload.transaction_id or parsed_meta.get("transaction_ref") or "").strip().upper()
     final_amount = payload.amount if payload.amount is not None else parsed_meta.get("amount")
     payer_name = parsed_meta.get("payer_name")
-    account_number = parsed_meta.get("account_number")
-    date_time = parsed_meta.get("date_time")
-
-    print(f"[Make.com Webhook] Parsed Results ->")
-    print(f"  • Transaction Ref: {final_txn_ref}")
-    print(f"  • Amount:          {final_amount} ETB")
-    print(f"  • Payer Name:      {payer_name}")
-    print(f"  • Account Number:  {account_number}")
-    print(f"  • Date & Time:     {date_time}")
-    print("=" * 60)
 
     if not final_txn_ref:
         raise HTTPException(
@@ -232,7 +227,6 @@ async def cbe_email_webhook(
             detail=f"Detected Transaction Ref '{final_txn_ref}' but could not extract a valid payment amount."
         )
 
-    # Look up matching transaction in Supabase
     client = storage_service.supabase_client
     matched_session_id: Optional[str] = None
     expected_amount: float = 50.0
@@ -247,13 +241,11 @@ async def cbe_email_webhook(
         except Exception as e:
             print(f"[Supabase Webhook Query] Notice: {e}")
 
-    # Fallback to local registry
     if not matched_session_id and final_txn_ref in _local_transactions_db:
         local_rec = _local_transactions_db[final_txn_ref]
         matched_session_id = local_rec.get("session_id")
         expected_amount = float(local_rec.get("amount_expected", 50.0))
 
-    # Match by pending active session if not already registered by ref
     if not matched_session_id:
         for sid, sdata in storage_service._sessions.items():
             if not sdata.get("is_paid", False):
@@ -265,7 +257,6 @@ async def cbe_email_webhook(
                     break
 
     if not matched_session_id:
-        # Record unmatched transaction in Supabase for audit
         if client:
             try:
                 client.table("transactions").insert({
@@ -287,7 +278,6 @@ async def cbe_email_webhook(
             amount_detected=final_amount
         )
 
-    # Validate amount
     if final_amount < expected_amount:
         if client:
             try:
@@ -304,7 +294,6 @@ async def cbe_email_webhook(
             detail=f"Underpayment detected. Required: {expected_amount} ETB, Received: {final_amount} ETB."
         )
 
-    # Success: Mark session paid & generate 24h Supabase Signed URL
     updated_session = storage_service.mark_session_paid(matched_session_id, final_txn_ref)
     download_url = updated_session.get("download_url")
 
@@ -332,9 +321,6 @@ async def cbe_email_webhook(
     }
     _local_transactions_db[matched_session_id] = _local_transactions_db[final_txn_ref]
 
-    print(f"[Make.com Webhook] Transaction {final_txn_ref} APPROVED for Session {matched_session_id}!")
-    print(f"[Make.com Webhook] Generated Signed Download URL: {download_url}")
-
     return CBEWebhookResponse(
         status="success",
         message="CBE Payment confirmed and verified successfully! Formatted thesis unlocked.",
@@ -348,7 +334,7 @@ async def cbe_email_webhook(
 async def check_transaction_status(session_id: str):
     """
     Polling Endpoint for Frontend:
-    Checks if payment for this session_id has been approved by the CBE Webhook.
+    Checks if payment for this session_id has been approved by the CBE IMAP poller / Webhook.
     """
     if not SAFE_ID_REGEX.match(session_id):
         raise HTTPException(status_code=400, detail="Invalid session identifier.")
@@ -389,7 +375,7 @@ async def check_transaction_status(session_id: str):
                         verified=True,
                         download_url=upd.get("download_url"),
                         file_name=upd.get("download_filename", "Formatted_Thesis.docx"),
-                        message="Payment confirmed via CBE Webhook!"
+                        message="Payment confirmed via CBE Automated System!"
                     )
                 elif status_val == "failed":
                     return CheckTransactionStatusResponse(
@@ -423,7 +409,7 @@ async def check_transaction_status(session_id: str):
         session_id=session_id,
         amount_expected=amount_expected,
         verified=False,
-        message="Waiting for payment confirmation from CBE..."
+        message="Waiting for CBE payment confirmation..."
     )
 
 @router.get("/download/{session_id}")

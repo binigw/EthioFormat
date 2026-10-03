@@ -16,7 +16,7 @@ else:
 
 class Settings(BaseModel):
     APP_NAME: str = "EthioFormat API"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "2.0.0"
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
     
     # Pricing configuration (ETB) - 50 ETB base up to 20 pages + 1.50 ETB / extra page
@@ -27,7 +27,13 @@ class Settings(BaseModel):
     # CBE Birr Account Details for Direct Bank Transfers
     CBE_ACCOUNT_NUMBER: str = os.getenv("CBE_ACCOUNT_NUMBER", "1000123456789")
     CBE_ACCOUNT_NAME: str = os.getenv("CBE_ACCOUNT_NAME", "EthioFormat / Thesis Automation Services")
-    CBE_WEBHOOK_SECRET: str = os.getenv("CBE_WEBHOOK_SECRET", "")
+    
+    # Gmail IMAP Configuration for Automated Receipt Checking
+    GMAIL_IMAP_SERVER: str = os.getenv("GMAIL_IMAP_SERVER", "imap.gmail.com")
+    GMAIL_IMAP_PORT: int = int(os.getenv("GMAIL_IMAP_PORT", "993"))
+    GMAIL_IMAP_USER: str = os.getenv("GMAIL_IMAP_USER", os.getenv("GMAIL_EMAIL", ""))
+    GMAIL_IMAP_PASSWORD: str = os.getenv("GMAIL_IMAP_PASSWORD", os.getenv("GMAIL_APP_PASSWORD", ""))
+    IMAP_POLL_INTERVAL_SECONDS: int = int(os.getenv("IMAP_POLL_INTERVAL_SECONDS", "20"))
     
     # Supabase Configuration
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
