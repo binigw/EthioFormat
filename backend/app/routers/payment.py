@@ -3,7 +3,7 @@ import re
 import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, status, Header
+from fastapi import APIRouter, HTTPException, status, Header, Request
 from fastapi.responses import FileResponse
 from app.models.payment import (
     InitiateCBEPaymentRequest,
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api", tags=["cbe_payment"])
 # Safe regex validator
 SAFE_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]+$")
 
-# In-memory transaction registry fallback when Supabase table is not yet migrated
+# In-memory transaction registry fallback
 _local_transactions_db: Dict[str, Dict[str, Any]] = {}
 
 @router.post("/initiate-cbe-payment", response_model=InitiateCBEPaymentResponse)
@@ -49,12 +49,10 @@ async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
             detail="Session not found. Please upload and preview your document again."
         )
 
-    # 1. Calculate exact pricing dynamically from formatted total pages
     total_pages = int(session.get("total_pages", 20))
     pricing_model = PricingEngine.calculate_pricing(total_pages)
     amount_expected = pricing_model.total_fee
 
-    # 2. Prepare transaction record
     initial_txn_ref = payload.transaction_ref or f"PENDING-{payload.session_id[:10]}-{int(time.time())}"
     
     txn_record = {
@@ -71,12 +69,11 @@ async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
     }
 
-    # 3. Store in Supabase 'transactions' table if available
+    # Store in Supabase 'transactions' table if available
     client = storage_service.supabase_client
     if client:
         try:
-            # Upsert by session_id & transaction_ref
-            res = client.table("transactions").insert({
+            client.table("transactions").insert({
                 "session_id": payload.session_id,
                 "amount_expected": amount_expected,
                 "transaction_ref": initial_txn_ref,
@@ -90,7 +87,6 @@ async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
         except Exception as e:
             print(f"[Supabase Transactions] Insert notice: {e}")
 
-    # Also keep in local registry for instant lookups
     _local_transactions_db[initial_txn_ref.upper()] = txn_record
     _local_transactions_db[payload.session_id] = txn_record
 
@@ -130,11 +126,9 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     pricing = session.get("pricing", {})
     amount_expected = float(pricing.get("total_fee", settings.BASE_FEE_ETB))
 
-    # Update or insert record in Supabase
     client = storage_service.supabase_client
     existing_status = "pending"
     download_url = None
-    file_name = None
 
     if client:
         try:
@@ -144,7 +138,6 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
                 existing_status = rec.get("status", "pending")
                 download_url = rec.get("download_url")
             else:
-                # Insert pending record for this transaction_ref
                 client.table("transactions").insert({
                     "session_id": payload.session_id,
                     "amount_expected": amount_expected,
@@ -156,7 +149,6 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
         except Exception as e:
             print(f"[Supabase Transactions] Submit notice: {e}")
 
-    # Update local state
     txn_record = {
         "session_id": payload.session_id,
         "amount_expected": amount_expected,
@@ -168,7 +160,6 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     _local_transactions_db[clean_ref] = txn_record
     _local_transactions_db[payload.session_id] = txn_record
 
-    # If already approved by webhook prior to user submitting form
     if existing_status == "approved" or session.get("is_paid", False):
         updated_session = storage_service.mark_session_paid(payload.session_id, clean_ref)
         return SubmitCBETransactionResponse(
@@ -195,24 +186,39 @@ async def cbe_email_webhook(
     authorization: Optional[str] = Header(None)
 ):
     """
-    Automated CBE Email Webhook Endpoint:
-    1. Receives incoming CBE email JSON payload (e.g. from SendGrid Inbound Parse, Mailgun, Postmark, Zapier, or Make).
-    2. Extracts Transaction ID and Amount from email subject and body using high-precision Regex.
-    3. Queries Supabase / database for matching 'pending' transaction.
-    4. Validates that amount_paid >= amount_expected.
-    5. If valid, marks status = 'approved' and generates 24-hour Supabase Signed URL.
+    Automated CBE Email Webhook Endpoint for Make.com / Mailhooks:
+    1. Receives incoming CBE email JSON payload from Make.com Custom Mailhook / Gmail Forwarder.
+    2. Extracts Transaction ID, Amount, Payer Name, Account Number, and Date/Time via Regex.
+    3. Matches with 'pending' session in Supabase / database.
+    4. Validates amount_paid >= amount_expected.
+    5. Updates status to 'approved' and generates 24-hour Supabase Signed Download URL.
     """
-    # 1. Parse Transaction ID and Amount using Regex
+    print("=" * 60)
+    print(f"[Make.com Webhook] Incoming CBE Email Notification at {datetime.datetime.now(datetime.timezone.utc)}")
+    print(f"[Make.com Webhook] Subject: {payload.subject}")
+    print(f"[Make.com Webhook] Sender: {payload.from_email}")
+
+    # Extract all fields
     raw_content = payload.body or payload.html or payload.text or payload.raw_content or ""
-    
-    extracted_txn, extracted_amount = cbe_email_parser.parse_email_content(
+    parsed_meta = cbe_email_parser.parse_full_cbe_payload(
         raw_text=raw_content,
         subject=payload.subject
     )
 
-    # Allow direct override if passed by pre-processing gateway
-    final_txn_ref = (payload.transaction_id or extracted_txn or "").strip().upper()
-    final_amount = payload.amount if payload.amount is not None else extracted_amount
+    # Use extracted or passed values
+    final_txn_ref = (payload.transaction_id or parsed_meta.get("transaction_ref") or "").strip().upper()
+    final_amount = payload.amount if payload.amount is not None else parsed_meta.get("amount")
+    payer_name = parsed_meta.get("payer_name")
+    account_number = parsed_meta.get("account_number")
+    date_time = parsed_meta.get("date_time")
+
+    print(f"[Make.com Webhook] Parsed Results ->")
+    print(f"  • Transaction Ref: {final_txn_ref}")
+    print(f"  • Amount:          {final_amount} ETB")
+    print(f"  • Payer Name:      {payer_name}")
+    print(f"  • Account Number:  {account_number}")
+    print(f"  • Date & Time:     {date_time}")
+    print("=" * 60)
 
     if not final_txn_ref:
         raise HTTPException(
@@ -226,14 +232,13 @@ async def cbe_email_webhook(
             detail=f"Detected Transaction Ref '{final_txn_ref}' but could not extract a valid payment amount."
         )
 
-    # 2. Look up matching transaction in Supabase
+    # Look up matching transaction in Supabase
     client = storage_service.supabase_client
     matched_session_id: Optional[str] = None
     expected_amount: float = 50.0
 
     if client:
         try:
-            # Look up by transaction_ref
             query = client.table("transactions").select("*").ilike("transaction_ref", final_txn_ref).execute()
             if query.data and len(query.data) > 0:
                 matched_row = query.data[0]
@@ -242,13 +247,13 @@ async def cbe_email_webhook(
         except Exception as e:
             print(f"[Supabase Webhook Query] Notice: {e}")
 
-    # Fallback to local registry if not found in Supabase
+    # Fallback to local registry
     if not matched_session_id and final_txn_ref in _local_transactions_db:
         local_rec = _local_transactions_db[final_txn_ref]
         matched_session_id = local_rec.get("session_id")
         expected_amount = float(local_rec.get("amount_expected", 50.0))
 
-    # If still not directly matched, check if any pending session exists with this amount
+    # Match by pending active session if not already registered by ref
     if not matched_session_id:
         for sid, sdata in storage_service._sessions.items():
             if not sdata.get("is_paid", False):
@@ -269,6 +274,7 @@ async def cbe_email_webhook(
                     "amount_paid": final_amount,
                     "transaction_ref": final_txn_ref,
                     "status": "approved",
+                    "payer_name": payer_name,
                     "raw_webhook_payload": payload.model_dump(by_alias=True)
                 }).execute()
             except Exception as e:
@@ -276,14 +282,13 @@ async def cbe_email_webhook(
 
         return CBEWebhookResponse(
             status="unmatched_recorded",
-            message=f"Transaction {final_txn_ref} with amount {final_amount} ETB recorded, but no active pending session matched.",
+            message=f"Transaction {final_txn_ref} with amount {final_amount} ETB recorded, waiting for user session link.",
             transaction_ref=final_txn_ref,
             amount_detected=final_amount
         )
 
-    # 3. Validate that amount_paid >= amount_expected (Strict Rule Compliance)
+    # Validate amount
     if final_amount < expected_amount:
-        # Mark as failed / underpaid
         if client:
             try:
                 client.table("transactions").update({
@@ -299,33 +304,36 @@ async def cbe_email_webhook(
             detail=f"Underpayment detected. Required: {expected_amount} ETB, Received: {final_amount} ETB."
         )
 
-    # 4. Success: Mark session paid & generate 24h Supabase Signed URL
+    # Success: Mark session paid & generate 24h Supabase Signed URL
     updated_session = storage_service.mark_session_paid(matched_session_id, final_txn_ref)
     download_url = updated_session.get("download_url")
 
-    # 5. Update Supabase transactions table to 'approved'
     if client:
         try:
             client.table("transactions").update({
                 "amount_paid": final_amount,
                 "status": "approved",
                 "download_url": download_url,
+                "payer_name": payer_name,
                 "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "raw_webhook_payload": payload.model_dump(by_alias=True)
             }).eq("session_id", matched_session_id).execute()
         except Exception as e:
             print(f"[Supabase Webhook Update] Notice: {e}")
 
-    # Update local registry
     _local_transactions_db[final_txn_ref] = {
         "session_id": matched_session_id,
         "amount_expected": expected_amount,
         "amount_paid": final_amount,
         "transaction_ref": final_txn_ref,
         "status": "approved",
-        "download_url": download_url
+        "download_url": download_url,
+        "payer_name": payer_name
     }
     _local_transactions_db[matched_session_id] = _local_transactions_db[final_txn_ref]
+
+    print(f"[Make.com Webhook] Transaction {final_txn_ref} APPROVED for Session {matched_session_id}!")
+    print(f"[Make.com Webhook] Generated Signed Download URL: {download_url}")
 
     return CBEWebhookResponse(
         status="success",
@@ -349,7 +357,6 @@ async def check_transaction_status(session_id: str):
     pricing = session.get("pricing", {}) if session else {}
     amount_expected = float(pricing.get("total_fee", settings.BASE_FEE_ETB))
 
-    # Check local session state
     if session and session.get("is_paid", False):
         return CheckTransactionStatusResponse(
             status="approved",
@@ -363,7 +370,6 @@ async def check_transaction_status(session_id: str):
             message="Payment approved! Your thesis is ready for download."
         )
 
-    # Check Supabase
     client = storage_service.supabase_client
     if client:
         try:
@@ -372,7 +378,6 @@ async def check_transaction_status(session_id: str):
                 row = query.data[0]
                 status_val = row.get("status", "pending")
                 if status_val == "approved":
-                    # Sync local session
                     tx_ref = row.get("transaction_ref", "CBE-VERIFIED")
                     upd = storage_service.mark_session_paid(session_id, tx_ref)
                     return CheckTransactionStatusResponse(
@@ -398,7 +403,6 @@ async def check_transaction_status(session_id: str):
         except Exception as e:
             print(f"[Supabase Status Polling] Notice: {e}")
 
-    # Check local DB
     if session_id in _local_transactions_db:
         loc = _local_transactions_db[session_id]
         if loc.get("status") == "approved":
@@ -449,7 +453,6 @@ async def download_formatted_file(session_id: str):
     file_path = Path(file_path_str).resolve()
     staging_base = Path(settings.STORAGE_STAGING_DIR).resolve()
 
-    # Ensure file is inside staging directory (prevents path traversal)
     if not str(file_path).startswith(str(staging_base)) or not file_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Formatted file not found on server.")
 
