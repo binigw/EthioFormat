@@ -39,7 +39,15 @@ class StorageService:
     def mark_session_paid(self, session_id: str, tx_ref: str) -> Dict[str, Any]:
         session = self._sessions.get(session_id)
         if not session:
-            raise KeyError(f"Session {session_id} not found")
+            # Reconstruct session if present in staging
+            session_dir = self.get_session_dir(session_id)
+            formatted_file = session_dir / "formatted_thesis.docx"
+            session = {
+                "session_id": session_id,
+                "formatted_docx_path": str(formatted_file),
+                "original_filename": "Formatted_Thesis.docx"
+            }
+            self._sessions[session_id] = session
 
         session["is_paid"] = True
         session["tx_ref"] = tx_ref
@@ -52,7 +60,7 @@ class StorageService:
 
         signed_url = None
 
-        # Attempt Supabase Storage Upload & Signed URL generation
+        # Attempt Supabase Storage Upload & 24h Signed URL generation
         if self.supabase_client and formatted_docx and Path(formatted_docx).exists():
             try:
                 bucket = settings.SUPABASE_BUCKET_NAME
@@ -80,7 +88,7 @@ class StorageService:
             except Exception as e:
                 print(f"[Supabase] Storage notice: {e}")
 
-        # Local secure download token fallback
+        # Local secure download fallback if storage unavailable
         if not signed_url:
             signed_url = f"/api/download/{session_id}"
 

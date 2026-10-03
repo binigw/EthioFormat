@@ -19,15 +19,15 @@ class Settings(BaseModel):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
     
-    # Pricing configuration (ETB)
+    # Pricing configuration (ETB) - 50 ETB base up to 20 pages + 1.50 ETB / extra page
     BASE_PAGE_THRESHOLD: int = int(os.getenv("BASE_PAGE_THRESHOLD", "20"))
     BASE_FEE_ETB: float = float(os.getenv("BASE_FEE_ETB", "50.0"))
     INCREMENTAL_PER_PAGE_FEE_ETB: float = float(os.getenv("INCREMENTAL_PER_PAGE_FEE_ETB", "1.50"))
     
-    # Chapa API Keys
-    CHAPA_SECRET_KEY: str = os.getenv("CHAPA_SECRET_KEY", "CHASECK_TEST-sample-key-123")
-    CHAPA_PUBLIC_KEY: str = os.getenv("CHAPA_PUBLIC_KEY", "CHAPUBK_TEST-sample-pub-123")
-    CHAPA_API_URL: str = os.getenv("CHAPA_API_URL", "https://api.chapa.co/v1")
+    # CBE Birr Account Details for Direct Bank Transfers
+    CBE_ACCOUNT_NUMBER: str = os.getenv("CBE_ACCOUNT_NUMBER", "1000123456789")
+    CBE_ACCOUNT_NAME: str = os.getenv("CBE_ACCOUNT_NAME", "EthioFormat / Thesis Automation Services")
+    CBE_WEBHOOK_SECRET: str = os.getenv("CBE_WEBHOOK_SECRET", "")
     
     # Supabase Configuration
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")

@@ -64,20 +64,39 @@ export interface PreviewResponse {
   error_message?: string;
 }
 
-export interface PaymentInitiationResponse {
-  status: "success" | "error";
-  checkout_url: string;
-  tx_ref: string;
-  amount: number;
-  currency: string;
+export interface CBEPaymentInitiationResponse {
+  status: "pending";
   session_id: string;
+  amount_expected: number;
+  currency: string;
+  total_pages: number;
+  cbe_account_number: string;
+  cbe_account_name: string;
+  pricing_breakdown: PricingDetail;
+  instructions: string;
 }
 
-export interface PaymentVerificationResponse {
-  status: "paid" | "pending" | "failed";
+export interface SubmitCBETxnResponse {
+  status: "pending" | "approved" | "failed";
+  session_id: string;
+  transaction_ref: string;
+  amount_expected: number;
+  message: string;
+  download_url?: string;
+  file_name?: string;
+}
+
+export interface TransactionStatusResponse {
+  status: "pending" | "approved" | "failed";
+  session_id: string;
+  transaction_ref?: string;
+  amount_expected: number;
+  amount_paid?: number;
   verified: boolean;
   download_url?: string;
-  expires_in_hours?: number;
   file_name?: string;
-  error?: string;
+  message?: string;
 }
+
+// Backward compatibility alias
+export interface PaymentVerificationResponse extends TransactionStatusResponse {}

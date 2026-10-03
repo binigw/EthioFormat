@@ -1,19 +1,23 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { formatETB } from "@/lib/utils";
-import { PricingDetail, PaymentVerificationResponse } from "@/types";
-import { initiatePayment, verifyPayment } from "@/lib/api";
+import { PricingDetail, TransactionStatusResponse, CBEPaymentInitiationResponse } from "@/types";
+import { initiateCBEPayment, submitCBETransaction, checkTransactionStatus } from "@/lib/api";
 import {
   X,
+  Building,
   CreditCard,
-  Smartphone,
   ShieldCheck,
   CheckCircle2,
   Loader2,
   ArrowRight,
-  ExternalLink,
+  Copy,
+  Check,
   Lock,
+  Smartphone,
+  AlertCircle,
+  Clock,
   Sparkles,
 } from "lucide-react";
 import confetti from "canvas-confetti";
@@ -25,7 +29,7 @@ interface PaymentModalProps {
   totalPages: number;
   pricing: PricingDetail;
   universityName: string;
-  onPaymentSuccess: (data: PaymentVerificationResponse) => void;
+  onPaymentSuccess: (data: TransactionStatusResponse) => void;
 }
 
 export function PaymentModal({
@@ -37,91 +41,194 @@ export function PaymentModal({
   universityName,
   onPaymentSuccess,
 }: PaymentModalProps) {
-  const [firstName, setFirstName] = useState("Abebe");
-  const [lastName, setLastName] = useState("Bikila");
-  const [email, setEmail] = useState("student@aau.edu.et");
-  const [phoneNumber, setPhoneNumber] = useState("0911223344");
-  const [paymentMethod, setPaymentMethod] = useState<"telebirr" | "cbebirr" | "chapa">("telebirr");
+  const [initData, setInitData] = useState<CBEPaymentInitiationResponse | null>(null);
+  const [isInitializing, setIsInitializing] = useState(true);
 
-  const [isLoading, setIsLoading] = useState(false);
+  // User inputs
+  const [transactionRef, setTransactionRef] = useState("");
+  const [payerName, setPayerName] = useState("");
+  const [payerPhone, setPayerPhone] = useState("");
+
+  // States
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPolling, setIsPolling] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [copiedAccount, setCopiedAccount] = useState(false);
+  const [copiedAmount, setCopiedAmount] = useState(false);
 
-  if (!isOpen) return null;
+  const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const handleProcessPayment = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // 1. Initiate CBE Details on modal open
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let mounted = true;
+    setIsInitializing(true);
     setErrorMessage(null);
-    setIsLoading(true);
-    setStatusMessage("Connecting to Chapa Payment Gateway...");
 
-    try {
-      // 1. Initiate transaction
-      const initRes = await initiatePayment(sessionId, {
-        firstName,
-        lastName,
-        email,
-        phoneNumber,
+    initiateCBEPayment(sessionId)
+      .then((data) => {
+        if (mounted) {
+          setInitData(data);
+          setIsInitializing(false);
+        }
+      })
+      .catch((err) => {
+        if (mounted) {
+          setErrorMessage(err.message || "Failed to load CBE payment details.");
+          setIsInitializing(false);
+        }
       });
 
-      setStatusMessage("Processing transaction with Telebirr / Chapa...");
-      await new Promise((r) => setTimeout(r, 1200));
+    return () => {
+      mounted = false;
+      if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
+    };
+  }, [isOpen, sessionId]);
 
-      // 2. Verify payment
-      setStatusMessage("Verifying payment security signature...");
-      const verifyRes = await verifyPayment(sessionId, initRes.tx_ref);
+  // Polling loop
+  const startPollingStatus = () => {
+    setIsPolling(true);
+    setStatusMessage("Listening for CBE confirmation webhook... This updates automatically upon payment.");
 
-      if (verifyRes.verified) {
-        // Trigger celebratory confetti
+    if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
+
+    pollingTimerRef.current = setInterval(async () => {
+      try {
+        const res = await checkTransactionStatus(sessionId);
+        if (res.status === "approved" && res.verified) {
+          if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
+          setIsPolling(false);
+          setStatusMessage("Payment Verified! Unlocking full formatted thesis...");
+
+          // Confetti celebration
+          confetti({
+            particleCount: 90,
+            spread: 75,
+            origin: { y: 0.6 },
+          });
+
+          await new Promise((r) => setTimeout(r, 600));
+          onPaymentSuccess(res);
+        } else if (res.status === "failed") {
+          if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
+          setIsPolling(false);
+          setErrorMessage(res.message || "Payment verification failed. Please check the amount transferred.");
+        }
+      } catch (e) {
+        // Continue polling silently
+      }
+    }, 2500);
+  };
+
+  const handleSubmitTxn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transactionRef.trim()) {
+      setErrorMessage("Please enter your CBE Transaction ID / Reference (FT number).");
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsSubmitting(true);
+    setStatusMessage("Registering CBE Transaction ID...");
+
+    try {
+      const res = await submitCBETransaction(
+        sessionId,
+        transactionRef.trim(),
+        payerName.trim() || undefined,
+        payerPhone.trim() || undefined
+      );
+
+      setIsSubmitting(false);
+
+      if (res.status === "approved" && res.download_url) {
         confetti({
-          particleCount: 80,
-          spread: 70,
+          particleCount: 90,
+          spread: 75,
           origin: { y: 0.6 },
         });
-
-        setStatusMessage("Payment Verified! Unlocking full formatted thesis...");
-        await new Promise((r) => setTimeout(r, 800));
-
-        onPaymentSuccess(verifyRes);
+        onPaymentSuccess({
+          status: "approved",
+          session_id: sessionId,
+          transaction_ref: transactionRef,
+          amount_expected: res.amount_expected,
+          verified: true,
+          download_url: res.download_url,
+          file_name: res.file_name,
+        });
       } else {
-        setErrorMessage(verifyRes.error || "Payment verification failed. Please try again.");
+        // Start polling for the incoming email webhook
+        startPollingStatus();
       }
     } catch (err: any) {
-      setErrorMessage(err.message || "An error occurred during payment processing.");
-    } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
+      setErrorMessage(err.message || "Failed to submit transaction reference.");
     }
   };
 
+  const copyToClipboard = (text: string, type: "account" | "amount") => {
+    navigator.clipboard.writeText(text);
+    if (type === "account") {
+      setCopiedAccount(true);
+      setTimeout(() => setCopiedAccount(false), 2000);
+    } else {
+      setCopiedAmount(true);
+      setTimeout(() => setCopiedAmount(false), 2000);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  const cbeAccNumber = initData?.cbe_account_number || "1000123456789";
+  const cbeAccName = initData?.cbe_account_name || "EthioFormat / Thesis Automation Services";
+  const exactAmount = initData?.amount_expected ?? pricing.total_fee;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in-50 duration-200">
-      <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
-        {/* Modal Header */}
-        <div className="bg-gradient-to-r from-emerald-700 via-emerald-600 to-teal-700 px-6 py-5 text-white flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-white/10 backdrop-blur-md">
-              <ShieldCheck className="h-5 w-5 text-emerald-200" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-md animate-in fade-in-50 duration-200 overflow-y-auto">
+      <div className="relative w-full max-w-lg my-6 bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-purple-900 via-indigo-900 to-purple-800 px-6 py-5 text-white flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-2xl bg-white/10 backdrop-blur-md text-amber-300 border border-white/10">
+              <Building className="h-6 w-6" />
             </div>
             <div>
-              <h3 className="font-bold text-lg leading-tight">Chapa Secure Checkout</h3>
-              <p className="text-xs text-emerald-100">{universityName}</p>
+              <h3 className="font-bold text-lg leading-tight flex items-center gap-2">
+                <span>CBE Birr / Bank Transfer</span>
+                <span className="text-[10px] uppercase tracking-wider bg-amber-400 text-purple-950 font-black px-2 py-0.5 rounded-full">
+                  Official
+                </span>
+              </h3>
+              <p className="text-xs text-purple-200">{universityName}</p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            disabled={isLoading}
-            className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+            disabled={isSubmitting || isPolling}
+            className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        {/* Amount Summary */}
-        <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        {/* Pricing Summary */}
+        <div className="bg-purple-50/70 px-6 py-3.5 border-b border-purple-100 flex items-center justify-between">
           <div>
-            <div className="text-xs text-slate-500 font-medium">Total Amount ({totalPages} Pages):</div>
-            <div className="text-2xl font-black text-slate-900">{formatETB(pricing.total_fee)}</div>
+            <div className="text-xs text-slate-500 font-medium">Exact Total Amount ({totalPages} Pages):</div>
+            <div className="text-2xl font-black text-purple-950 flex items-center gap-2">
+              <span>{formatETB(exactAmount)}</span>
+              <button
+                type="button"
+                onClick={() => copyToClipboard(String(exactAmount), "amount")}
+                className="text-xs text-purple-700 hover:text-purple-900 p-1 rounded hover:bg-purple-100"
+                title="Copy Amount"
+              >
+                {copiedAmount ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+              </button>
+            </div>
           </div>
           <div className="text-right text-xs text-slate-500">
             <div>Base (20 pgs): {formatETB(pricing.base_fee)}</div>
@@ -131,132 +238,155 @@ export function PaymentModal({
           </div>
         </div>
 
-        {/* Checkout Form */}
-        <form onSubmit={handleProcessPayment} className="p-6 space-y-4">
-          {/* Payment Method Selector */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700">Choose Payment Method</label>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => setPaymentMethod("telebirr")}
-                className={`p-3 rounded-xl border text-center transition-all ${
-                  paymentMethod === "telebirr"
-                    ? "border-emerald-600 bg-emerald-50/70 text-emerald-950 font-bold shadow-sm"
-                    : "border-slate-200 hover:border-slate-300 text-slate-700"
-                }`}
-              >
-                <Smartphone className="h-5 w-5 mx-auto mb-1 text-emerald-600" />
-                <div className="text-xs">Telebirr</div>
-              </button>
+        {/* Body Content */}
+        <div className="p-6 space-y-5">
+          {/* Bank Account Details Card */}
+          <div className="p-4 rounded-2xl bg-slate-900 text-white space-y-3 shadow-inner">
+            <div className="flex items-center justify-between text-xs text-purple-300">
+              <span className="font-semibold flex items-center gap-1.5">
+                <Smartphone className="h-4 w-4 text-amber-400" /> Commercial Bank of Ethiopia (CBE)
+              </span>
+              <span className="text-amber-400 font-mono text-[11px]">CBEBirr / Mobile Banking</span>
+            </div>
 
+            <div className="p-3 rounded-xl bg-white/10 border border-white/10 flex items-center justify-between">
+              <div>
+                <div className="text-[11px] text-slate-400">Account Number:</div>
+                <div className="font-mono text-lg font-black tracking-wider text-amber-300">
+                  {cbeAccNumber}
+                </div>
+              </div>
               <button
                 type="button"
-                onClick={() => setPaymentMethod("cbebirr")}
-                className={`p-3 rounded-xl border text-center transition-all ${
-                  paymentMethod === "cbebirr"
-                    ? "border-emerald-600 bg-emerald-50/70 text-emerald-950 font-bold shadow-sm"
-                    : "border-slate-200 hover:border-slate-300 text-slate-700"
-                }`}
+                onClick={() => copyToClipboard(cbeAccNumber, "account")}
+                className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-purple-950 font-bold transition-all cursor-pointer"
               >
-                <Smartphone className="h-5 w-5 mx-auto mb-1 text-purple-600" />
-                <div className="text-xs">CBE Birr</div>
+                {copiedAccount ? (
+                  <>
+                    <Check className="h-3.5 w-3.5" />
+                    <span>Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5" />
+                    <span>Copy Acc</span>
+                  </>
+                )}
               </button>
+            </div>
 
-              <button
-                type="button"
-                onClick={() => setPaymentMethod("chapa")}
-                className={`p-3 rounded-xl border text-center transition-all ${
-                  paymentMethod === "chapa"
-                    ? "border-emerald-600 bg-emerald-50/70 text-emerald-950 font-bold shadow-sm"
-                    : "border-slate-200 hover:border-slate-300 text-slate-700"
-                }`}
-              >
-                <CreditCard className="h-5 w-5 mx-auto mb-1 text-blue-600" />
-                <div className="text-xs">Cards / Chapa</div>
-              </button>
+            <div className="text-xs text-slate-300 flex items-center justify-between pt-1 border-t border-white/10">
+              <span className="text-slate-400">Account Name:</span>
+              <span className="font-medium text-white">{cbeAccName}</span>
             </div>
           </div>
 
-          {/* Student Contact Info */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-slate-700">First Name</label>
+          {/* Transfer Instructions */}
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-1">
+            <div className="font-bold flex items-center gap-1.5 text-amber-950">
+              <Clock className="h-4 w-4 text-amber-700" />
+              <span>How to pay & unlock instant download:</span>
+            </div>
+            <ol className="list-decimal list-inside space-y-0.5 text-[11px] text-amber-800">
+              <li>Transfer <strong>{formatETB(exactAmount)}</strong> via CBE Mobile Banking or CBE Birr app.</li>
+              <li>Copy the <strong>Transaction ID / Reference (FT number)</strong> from the SMS or slip.</li>
+              <li>Paste the Transaction ID below to verify and unlock your full thesis instantly.</li>
+            </ol>
+          </div>
+
+          {/* Transaction Submission Form */}
+          <form onSubmit={handleSubmitTxn} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
+                <span>Enter CBE Transaction ID / Reference (FT number)</span>
+                <span className="text-rose-500">*</span>
+              </label>
               <input
                 type="text"
                 required
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-500"
+                disabled={isSubmitting || isPolling}
+                placeholder="e.g. FT2609871234 or TXN987654"
+                value={transactionRef}
+                onChange={(e) => setTransactionRef(e.target.value.toUpperCase())}
+                className="w-full px-4 py-3 text-sm font-mono font-bold tracking-wide border-2 border-purple-300 rounded-xl focus:outline-none focus:border-purple-600 focus:ring-2 focus:ring-purple-200 uppercase bg-purple-50/30"
               />
             </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-slate-700">Last Name</label>
-              <input
-                type="text"
-                required
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-500"
-              />
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-medium text-slate-600">Payer Name (Optional)</label>
+                <input
+                  type="text"
+                  disabled={isSubmitting || isPolling}
+                  placeholder="e.g. Abebe Bikila"
+                  value={payerName}
+                  onChange={(e) => setPayerName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-purple-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-medium text-slate-600">Phone Number (Optional)</label>
+                <input
+                  type="tel"
+                  disabled={isSubmitting || isPolling}
+                  placeholder="0911223344"
+                  value={payerPhone}
+                  onChange={(e) => setPayerPhone(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-purple-500"
+                />
+              </div>
             </div>
-          </div>
 
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-slate-700">Student Email Address</label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-500"
-            />
-          </div>
+            {errorMessage && (
+              <div className="p-3 text-xs text-rose-700 bg-rose-50 rounded-xl border border-rose-200 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                <span>{errorMessage}</span>
+              </div>
+            )}
 
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-slate-700">Phone Number (Telebirr / CBE)</label>
-            <input
-              type="tel"
-              required
-              value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-emerald-500"
-            />
-          </div>
+            {isPolling && (
+              <div className="p-3 text-xs text-purple-900 bg-purple-50 rounded-xl border border-purple-200 flex items-center gap-2.5 animate-pulse">
+                <Loader2 className="h-4 w-4 animate-spin text-purple-700 flex-shrink-0" />
+                <div className="space-y-0.5">
+                  <div className="font-bold text-purple-950">Awaiting CBE Webhook Confirmation...</div>
+                  <div className="text-[11px] text-purple-700">Checking Transaction ID {transactionRef}</div>
+                </div>
+              </div>
+            )}
 
-          {errorMessage && (
-            <div className="p-3 text-xs text-rose-700 bg-rose-50 rounded-lg border border-rose-200">
-              {errorMessage}
+            <div className="pt-1">
+              <button
+                type="submit"
+                disabled={isSubmitting || isInitializing}
+                className="w-full py-4 px-4 bg-gradient-to-r from-purple-800 via-indigo-900 to-purple-900 hover:from-purple-900 hover:to-indigo-950 text-white font-extrabold text-sm rounded-2xl shadow-xl shadow-purple-900/30 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Submitting Reference...</span>
+                  </>
+                ) : isPolling ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Checking Status Live...</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="h-4 w-4 text-amber-300" />
+                    <span>Verify CBE Payment & Unlock .DOCX</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </>
+                )}
+              </button>
             </div>
-          )}
+          </form>
 
-          {isLoading && (
-            <div className="p-3 text-xs text-emerald-800 bg-emerald-50 rounded-lg border border-emerald-200 flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin text-emerald-600" />
-              <span>{statusMessage}</span>
-            </div>
-          )}
-
-          <div className="pt-2">
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Processing Payment...</span>
-                </>
-              ) : (
-                <>
-                  <Lock className="h-4 w-4" />
-                  <span>Pay {formatETB(pricing.total_fee)} & Download .DOCX</span>
-                </>
-              )}
-            </button>
+          <div className="text-center text-[11px] text-slate-400 flex items-center justify-center gap-1.5">
+            <ShieldCheck className="h-4 w-4 text-emerald-600" />
+            <span>Automated CBE Email Webhook Engine • 24-Hour Supabase Storage Security</span>
           </div>
-        </form>
+        </div>
       </div>
     </div>
   );

@@ -1,4 +1,10 @@
-import { PreviewResponse, PaymentInitiationResponse, PaymentVerificationResponse, CustomFormattingRules } from "@/types";
+import {
+  PreviewResponse,
+  CBEPaymentInitiationResponse,
+  SubmitCBETxnResponse,
+  TransactionStatusResponse,
+  CustomFormattingRules,
+} from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://ethioformat.onrender.com/api";
 
@@ -28,50 +34,80 @@ export async function uploadAndPreviewThesis(
   return response.json();
 }
 
-export async function initiatePayment(
+/**
+ * Initiates CBE Birr Payment, returns CBE account details and expected amount.
+ */
+export async function initiateCBEPayment(
   sessionId: string,
-  studentInfo: { email: string; firstName: string; lastName: string; phoneNumber?: string }
-): Promise<PaymentInitiationResponse> {
-  const response = await fetch(`${API_BASE}/initiate-payment`, {
+  studentInfo?: { name?: string; email?: string; phone?: string }
+): Promise<CBEPaymentInitiationResponse> {
+  const response = await fetch(`${API_BASE}/initiate-cbe-payment`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
       session_id: sessionId,
-      email: studentInfo.email,
-      first_name: studentInfo.firstName,
-      last_name: studentInfo.lastName,
-      phone_number: studentInfo.phoneNumber,
+      student_name: studentInfo?.name,
+      student_email: studentInfo?.email,
+      student_phone: studentInfo?.phone,
     }),
   });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Payment initiation failed (${response.status}).`);
+    throw new Error(errorData.detail || `CBE Payment initiation failed (${response.status}).`);
   }
 
   return response.json();
 }
 
-export async function verifyPayment(
+/**
+ * Submits the CBE Transaction ID (FT/TXN reference) entered by user.
+ */
+export async function submitCBETransaction(
   sessionId: string,
-  txRef: string
-): Promise<PaymentVerificationResponse> {
-  const response = await fetch(`${API_BASE}/verify-payment`, {
+  transactionRef: string,
+  payerName?: string,
+  payerPhone?: string
+): Promise<SubmitCBETxnResponse> {
+  const response = await fetch(`${API_BASE}/payment/submit-cbe-txn`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
       session_id: sessionId,
-      tx_ref: txRef,
+      transaction_ref: transactionRef,
+      payer_name: payerName,
+      payer_phone: payerPhone,
     }),
   });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Payment verification failed (${response.status}).`);
+    throw new Error(errorData.detail || `Transaction submission failed (${response.status}).`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Polls backend / Supabase for transaction approval status.
+ */
+export async function checkTransactionStatus(
+  sessionId: string
+): Promise<TransactionStatusResponse> {
+  const response = await fetch(`${API_BASE}/payment/status/${sessionId}`, {
+    method: "GET",
+    headers: {
+      "Cache-Control": "no-cache",
+    },
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Status check failed (${response.status}).`);
   }
 
   return response.json();
