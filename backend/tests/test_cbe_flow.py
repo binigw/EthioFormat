@@ -8,6 +8,17 @@ from app.services.storage_service import StorageService
 
 client = TestClient(app)
 
+def test_root_endpoint():
+    # Test GET /
+    res_get = client.get("/")
+    assert res_get.status_code == 200
+    data = res_get.json()
+    assert data["status"] == "alive"
+
+    # Test HEAD /
+    res_head = client.head("/")
+    assert res_head.status_code == 200
+
 def test_cbe_details_endpoint():
     response = client.get("/api/cbe-details")
     assert response.status_code == 200

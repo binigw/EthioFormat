@@ -38,7 +38,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins if not settings.DEBUG else ["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS", "HEAD"],
     allow_headers=["*"],
 )
 
@@ -48,6 +48,19 @@ app.include_router(preview.router)
 app.include_router(payment.router)
 
 SAMPLE_DOCX = Path(__file__).parent.parent / "sample_ethiopian_thesis.docx"
+
+@app.get("/")
+@app.head("/")
+def root():
+    """
+    Root endpoint for UptimeRobot, Render health checks, and monitoring services.
+    """
+    return {
+        "status": "alive",
+        "app": settings.APP_NAME,
+        "version": settings.APP_VERSION,
+        "message": "EthioFormat Backend is running smoothly."
+    }
 
 @app.get("/api/sample-thesis")
 def get_sample_thesis():
