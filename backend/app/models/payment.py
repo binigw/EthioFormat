@@ -51,6 +51,7 @@ class CBEWebhookPayload(BaseModel):
 
     subject: Optional[str] = None
     from_email: Optional[str] = Field(None, alias="from")
+    sender: Optional[str] = None
     to_email: Optional[str] = Field(None, alias="to")
     body: Optional[str] = None
     html: Optional[str] = None
@@ -60,6 +61,7 @@ class CBEWebhookPayload(BaseModel):
     # Support direct extracted fields if passed by intermediate parser
     transaction_id: Optional[str] = None
     amount: Optional[float] = None
+    payer_name: Optional[str] = None
 
 class CBEWebhookResponse(BaseModel):
     status: str

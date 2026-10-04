@@ -288,7 +288,7 @@ async def cbe_email_webhook(
 
     extracted_txn = parsed_meta.get("transaction_ref") or payload.transaction_id
     extracted_amount = parsed_meta.get("amount") or payload.amount
-    payer_name = parsed_meta.get("payer_name") or payload.sender or payload.from_
+    payer_name = parsed_meta.get("payer_name") or payload.payer_name or payload.sender or payload.from_email
 
     safe_print(f"[CBE Webhook] Parsed: Txn='{extracted_txn}', Amount={extracted_amount} ETB, Payer='{payer_name}'")
 
