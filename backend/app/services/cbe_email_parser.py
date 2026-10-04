@@ -32,7 +32,7 @@ class CBEEmailParserService:
     CBE Mobile Banking SMS forwards, and Core Banking Confirmation Receipts.
     """
 
-    # 1. Patterns for CBE Transaction Reference / FT Number
+    # 1. Patterns for CBE Transaction Reference / FT Number / CBEBirr Numeric ID
     TXN_PATTERNS = [
         # Explicit FT Numbers (Standard CBE Mobile Banking / Core Banking FT number)
         re.compile(r'\b(FT[0-9]{6,20}[A-Za-z0-9]*)\b', re.IGNORECASE),
@@ -40,18 +40,20 @@ class CBEEmailParserService:
         re.compile(r'\b(TXN[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
         re.compile(r'\b(CBE[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
         re.compile(r'\b(TT[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
-        # Labelled Transaction ID / Reference (English & Amharic)
+        # Labelled Transaction ID / Ref / Reference / Receipt / Code (English & Amharic)
         re.compile(
-            r'(?:Transaction\s*(?:ID|Ref|Reference|Number|No\.?|Code)|Txn\s*(?:ID|Ref|Reference|Number|No\.?)|Ref\s*(?:No\.?|Number)|Reference\s*(?:No\.?|Number)|FT\s*(?:No\.?|Number)|Receipt\s*(?:No\.?|Number|ID)|የግብይት\s*ቁጥር|የማጣቀሻ\s*ቁጥር|የትራንዛክሽን\s*ቁጥር|መለያ\s*ቁጥር)\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})',
+            r'\b(?:Transaction|Txn|Ref(?:erence)?|Receipt|FT|TT|Code|የግብይት\s*ቁጥር|የማጣቀሻ\s*ቁጥር|የትራንዛክሽን\s*ቁጥር|መለያ\s*ቁጥር)(?:\s*(?:ID|Ref|Reference|Number|No\.?|Code))?\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})\b',
             re.IGNORECASE
         ),
-        # Sentence structures: "transfer with reference FT...", "deposited with ref FT..."
+        # Sentence structures: "transfer with reference ...", "deposited with ref ..."
         re.compile(
             r'(?:transfer(?:red)?|deposit(?:ed)?|credit(?:ed)?|paid)\s+(?:with\s+)?(?:reference|ref|id|txn)\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})',
             re.IGNORECASE
         ),
-        # CBEBirr 10-18 numeric transaction IDs following keyword
+        # CBEBirr 10-18 numeric transaction IDs following keyword or starting with 2
         re.compile(r'(?:CBEBirr\s*(?:Txn|Ref|ID|Transaction)|Birr\s*Ref)\s*[:=\-]?\s*([0-9]{8,18})', re.IGNORECASE),
+        # Standalone CBEBirr 10-digit numeric transaction IDs (e.g. 2798853639)
+        re.compile(r'\b(2[0-9]{9,15})\b', re.IGNORECASE),
     ]
 
     # 2. Patterns for Payment Amount in ETB / Birr
@@ -133,7 +135,7 @@ class CBEEmailParserService:
     def parse_full_cbe_payload(cls, raw_text: str, subject: Optional[str] = None) -> Dict[str, Any]:
         """
         Parses all key fields from email payload:
-        - Transaction Reference / ID (FT number, TXN ref)
+        - Transaction Reference / ID (FT number, TXN ref, CBEBirr numeric ID)
         - Payment Amount (ETB)
         - Payer Name
         - Account Number
