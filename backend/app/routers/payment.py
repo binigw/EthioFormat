@@ -576,6 +576,17 @@ async def download_formatted_thesis(session_id: str):
     docx_path = session.get("formatted_docx_path")
     target_path = Path(docx_path) if docx_path else (storage_service.get_session_dir(session_id) / "formatted_thesis.docx")
 
+    # Security: Ensure target file is strictly confined within staging directory
+    try:
+        staging_root = storage_service.staging_dir.resolve()
+        resolved_target = target_path.resolve()
+        if not str(resolved_target).startswith(str(staging_root)):
+            raise HTTPException(status_code=403, detail="Access denied.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     if not target_path.exists() and storage_service.supabase_client:
         try:
             bucket = settings.SUPABASE_BUCKET_NAME
@@ -597,12 +608,14 @@ async def download_formatted_thesis(session_id: str):
         else:
             raise HTTPException(status_code=404, detail="Formatted file missing. Please regenerate.")
 
-    filename = session.get("download_filename") or session.get("original_filename", "Formatted_Thesis.docx")
-    if not filename.endswith(".docx"):
-        filename = f"{filename}.docx"
+    raw_filename = session.get("download_filename") or session.get("original_filename", "Formatted_Thesis.docx")
+    clean_filename = Path(raw_filename).name
+    clean_filename = re.sub(r'[^a-zA-Z0-9_.\-\s]', '', clean_filename).strip()
+    if not clean_filename.lower().endswith(".docx"):
+        clean_filename = f"{clean_filename}.docx"
 
     return FileResponse(
         path=str(target_path),
-        filename=filename,
+        filename=clean_filename,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )

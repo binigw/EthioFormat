@@ -179,3 +179,26 @@ def test_preverified_transaction_flow():
     assert res is not None
     assert res["amount"] == 63.50
     assert res["transaction_ref"] == txn_ref
+
+def test_security_headers_and_path_traversal():
+    # 1. Security Headers
+    res = client.get("/")
+    assert res.headers.get("x-content-type-options") == "nosniff"
+    assert res.headers.get("x-frame-options") == "SAMEORIGIN"
+
+    # 2. Path Traversal Protection on download endpoint
+    res_bad1 = client.get("/api/download/../../etc/passwd")
+    assert res_bad1.status_code in (400, 404)
+
+    res_bad2 = client.get("/api/download/..%2F..%2Fetc%2Fpasswd")
+    assert res_bad2.status_code in (400, 404)
+
+    # 3. Paywall Protection: downloading unpaid session must return 403
+    unpaid_sess = "sess_sec_unpaid_12345"
+    StorageService().register_session(unpaid_sess, {
+        "session_id": unpaid_sess,
+        "is_paid": False,
+        "original_filename": "Secret_Thesis.docx"
+    })
+    res_unpaid = client.get(f"/api/download/{unpaid_sess}")
+    assert res_unpaid.status_code == 403
