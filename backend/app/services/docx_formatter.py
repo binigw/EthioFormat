@@ -176,14 +176,32 @@ class DocxFormatterService:
             p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.line_spacing = 1.0
 
-            run = p.add_run()
-            self._set_run_typography(run, font_name=font_name, font_size_pt=font_size_pt)
-
+            # Proper OpenXML structure for page number in Word:
             fldSimple = OxmlElement('w:fldSimple')
             fldSimple.set(qn('w:instr'), 'PAGE')
-            run._r.append(fldSimple)
-        except Exception:
-            pass
+
+            r = OxmlElement('w:r')
+            rPr = OxmlElement('w:rPr')
+            rFonts = OxmlElement('w:rFonts')
+            rFonts.set(qn('w:ascii'), font_name)
+            rFonts.set(qn('w:hAnsi'), font_name)
+            rFonts.set(qn('w:cs'), font_name)
+            rPr.append(rFonts)
+
+            sz = OxmlElement('w:sz')
+            sz.set(qn('w:val'), str(int(font_size_pt * 2)))
+            rPr.append(sz)
+
+            r.append(rPr)
+
+            t = OxmlElement('w:t')
+            t.text = '1'
+            r.append(t)
+            fldSimple.append(r)
+
+            p._p.append(fldSimple)
+        except Exception as e:
+            safe_print(f"[Footer Page Number Error] {e}")
 
     def format_document(
         self,
