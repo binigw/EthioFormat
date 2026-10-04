@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import shutil
 import time
 from pathlib import Path
@@ -88,6 +89,80 @@ class StorageService:
 
         return None
 
+    def update_session_transaction(
+        self,
+        session_id: str,
+        transaction_ref: str,
+        payer_name: Optional[str] = None,
+        payer_phone: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Attaches the user-submitted transaction ID & payer info to the session
+        and writes it immediately to disk so all workers & background IMAP loops find it.
+        """
+        session = self.get_session(session_id)
+        if not session:
+            return None
+
+        session["transaction_ref"] = transaction_ref.strip().upper()
+        session["tx_ref"] = transaction_ref.strip().upper()
+        if payer_name:
+            session["payer_name"] = payer_name.strip()
+        if payer_phone:
+            session["payer_phone"] = payer_phone.strip()
+        session["tx_submitted_at"] = time.time()
+
+        self._sessions[session_id] = session
+
+        try:
+            session_dir = self.get_session_dir(session_id)
+            meta_path = session_dir / "session_metadata.json"
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(session, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[StorageService] Failed to update transaction on disk: {e}")
+
+        return session
+
+    def get_all_sessions(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Gathers all sessions across in-memory and disk metadata.
+        """
+        combined: Dict[str, Dict[str, Any]] = dict(self._sessions)
+
+        if self.staging_dir.exists():
+            for item in self.staging_dir.iterdir():
+                if item.is_dir() and (item / "session_metadata.json").exists():
+                    sid = item.name
+                    if sid not in combined:
+                        try:
+                            with open(item / "session_metadata.json", "r", encoding="utf-8") as f:
+                                combined[sid] = json.load(f)
+                        except Exception:
+                            pass
+
+        return combined
+
+    def find_session_by_txn_ref(self, target_ref: str) -> Optional[str]:
+        """
+        Searches all active sessions for matching transaction_ref / tx_ref.
+        Supports normalized alphanumeric comparison (e.g., FT260938 vs ft-260938).
+        """
+        if not target_ref:
+            return None
+
+        clean_target = re.sub(r'[^A-Z0-9]', '', target_ref.upper())
+        all_sessions = self.get_all_sessions()
+
+        for sid, sdata in all_sessions.items():
+            candidate = sdata.get("transaction_ref") or sdata.get("tx_ref")
+            if candidate:
+                clean_cand = re.sub(r'[^A-Z0-9]', '', str(candidate).upper())
+                if clean_cand == clean_target or clean_target in clean_cand or clean_cand in clean_target:
+                    return sid
+
+        return None
+
     def mark_session_paid(self, session_id: str, tx_ref: str) -> Dict[str, Any]:
         session = self.get_session(session_id)
         if not session:
@@ -103,6 +178,7 @@ class StorageService:
 
         session["is_paid"] = True
         session["tx_ref"] = tx_ref
+        session["transaction_ref"] = tx_ref
         session["paid_at"] = time.time()
 
         formatted_docx = session.get("formatted_docx_path")

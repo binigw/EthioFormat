@@ -1,5 +1,5 @@
 from typing import Optional, Any, Dict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 # ==============================================================================
 # CBE BIRR INITIATION MODELS
@@ -47,6 +47,8 @@ class SubmitCBETransactionResponse(BaseModel):
 # ==============================================================================
 
 class CBEWebhookPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
     subject: Optional[str] = None
     from_email: Optional[str] = Field(None, alias="from")
     to_email: Optional[str] = Field(None, alias="to")
@@ -54,12 +56,10 @@ class CBEWebhookPayload(BaseModel):
     html: Optional[str] = None
     text: Optional[str] = None
     raw_content: Optional[str] = None
+    message: Optional[str] = None
     # Support direct extracted fields if passed by intermediate parser
     transaction_id: Optional[str] = None
     amount: Optional[float] = None
-
-    class Config:
-        populate_by_name = True
 
 class CBEWebhookResponse(BaseModel):
     status: str

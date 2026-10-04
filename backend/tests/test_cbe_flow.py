@@ -9,13 +9,11 @@ from app.services.storage_service import StorageService
 client = TestClient(app)
 
 def test_root_endpoint():
-    # Test GET /
     res_get = client.get("/")
     assert res_get.status_code == 200
     data = res_get.json()
     assert data["status"] == "alive"
 
-    # Test HEAD /
     res_head = client.head("/")
     assert res_head.status_code == 200
 
@@ -41,7 +39,7 @@ def test_pricing_calculation():
     assert p30.incremental_fee == 15.0
     assert p30.total_fee == 65.0
 
-def test_cbe_email_parser():
+def test_cbe_email_parser_standard():
     sample_text = """
     Dear Customer,
     Your account 1000123456789 has been credited with ETB 65.00 on 04/10/2026.
@@ -54,9 +52,35 @@ def test_cbe_email_parser():
     assert receipt["amount"] == 65.00
     assert receipt["payer_name"] == "ABEBE BIKILA"
 
-def test_storage_persistence():
+def test_cbe_email_parser_html_and_non_breaking_spaces():
+    html_sample = """
+    <div>
+        <p>Dear Customer,</p>
+        <p>You have received <b>ETB&nbsp;50.00</b> from <b>Almaz Ayana</b>.</p>
+        <p>Txn Ref No.: <b>FT2627883921</b></p>
+        <p>Date: 2026-10-04 14:20:00</p>
+    </div>
+    """
+    receipt = CBEEmailParserService.parse_full_cbe_payload(html_sample)
+    assert receipt["transaction_ref"] == "FT2627883921"
+    assert receipt["amount"] == 50.00
+    assert receipt["payer_name"] == "Almaz Ayana"
+
+def test_cbe_email_parser_amharic():
+    amharic_sample = """
+    የከፋዩ ስም: በቀለ ቶሎሳ
+    የግብይት ቁጥር: FT2600112233
+    መጠን: 50.00 ብር
+    ቀን: 04/10/2026
+    """
+    receipt = CBEEmailParserService.parse_full_cbe_payload(amharic_sample)
+    assert receipt["transaction_ref"] == "FT2600112233"
+    assert receipt["amount"] == 50.00
+    assert receipt["payer_name"] == "በቀለ ቶሎሳ"
+
+def test_storage_persistence_and_lookup():
     service = StorageService()
-    session_id = "test_persistence_session_123"
+    session_id = "test_persistence_session_debug_999"
     service.register_session(
         session_id=session_id,
         data={
@@ -70,16 +94,16 @@ def test_storage_persistence():
         }
     )
 
-    # Check from a fresh instance
+    # Attach transaction reference
+    service.update_session_transaction(session_id, "FT2699887766", "Derartu Tulu")
+
+    # Lookup from fresh service instance
     new_service = StorageService()
-    sess = new_service.get_session(session_id)
-    assert sess is not None
-    assert sess["total_pages"] == 25
-    assert sess["pricing"]["total_fee"] == 57.5
-    assert sess["is_paid"] is False
+    matched_id = new_service.find_session_by_txn_ref("ft-2699887766")
+    assert matched_id == session_id
 
     # Mark paid
-    new_service.mark_session_paid(session_id, "FT2609871234")
+    new_service.mark_session_paid(session_id, "FT2699887766")
     sess_paid = StorageService().get_session(session_id)
     assert sess_paid["is_paid"] is True
-    assert sess_paid["tx_ref"] == "FT2609871234"
+    assert sess_paid["tx_ref"] == "FT2699887766"

@@ -1,32 +1,57 @@
 import re
-from typing import Optional, Tuple, Dict, Any
+import html
+from typing import Optional, Dict, Any, List
 
 class CBEEmailParserService:
     """
-    High-accuracy Regular Expression & Natural Language Parser for Commercial Bank of Ethiopia (CBE)
-    Email Notifications, CBE Birr Mailhooks, and Core Banking Confirmation Receipts.
+    High-accuracy Multi-Format Regular Expression & NLP Parser for
+    Commercial Bank of Ethiopia (CBE) Email Notifications, CBE Birr Mailhooks,
+    CBE Mobile Banking SMS forwards, and Core Banking Confirmation Receipts.
     """
 
     # 1. Patterns for CBE Transaction Reference / FT Number
     TXN_PATTERNS = [
-        re.compile(r'\b(FT[0-9]{6,18}[A-Za-z0-9]*)\b', re.IGNORECASE),
-        re.compile(r'\b(TXN[0-9A-Za-z]{6,20})\b', re.IGNORECASE),
-        re.compile(r'\b(CBE[0-9A-Za-z]{6,20})\b', re.IGNORECASE),
-        re.compile(r'(?:Transaction\s*(?:ID|Ref|Reference|Number|No\.?)|Txn\s*ID|Ref\s*No\.?|Reference\s*No\.?|FT\s*No\.?|CBEBirr\s*Ref\.?)\s*[:=\-]\s*([A-Za-z0-9_-]{5,32})', re.IGNORECASE),
-        re.compile(r'(?:transfer(?:red)?\s+with\s+(?:reference|id|ref))\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})', re.IGNORECASE),
+        # Explicit FT Numbers (Standard CBE Mobile Banking / Core Banking FT number)
+        re.compile(r'\b(FT[0-9]{6,20}[A-Za-z0-9]*)\b', re.IGNORECASE),
+        # Explicit TXN / CBEBirr / TT Transaction Codes
+        re.compile(r'\b(TXN[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
+        re.compile(r'\b(CBE[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
+        re.compile(r'\b(TT[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
+        # Labelled Transaction ID / Reference (English & Amharic)
+        re.compile(
+            r'(?:Transaction\s*(?:ID|Ref|Reference|Number|No\.?|Code)|Txn\s*(?:ID|Ref|Reference|Number|No\.?)|Ref\s*(?:No\.?|Number)|Reference\s*(?:No\.?|Number)|FT\s*(?:No\.?|Number)|Receipt\s*(?:No\.?|Number|ID)|የግብይት\s*ቁጥር|የማጣቀሻ\s*ቁጥር|የትራንዛክሽን\s*ቁጥር|መለያ\s*ቁጥር)\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})',
+            re.IGNORECASE
+        ),
+        # Sentence structures: "transfer with reference FT...", "deposited with ref FT..."
+        re.compile(
+            r'(?:transfer(?:red)?|deposit(?:ed)?|credit(?:ed)?|paid)\s+(?:with\s+)?(?:reference|ref|id|txn)\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})',
+            re.IGNORECASE
+        ),
+        # CBEBirr 10-16 numeric transaction IDs following keyword
+        re.compile(r'(?:CBEBirr\s*(?:Txn|Ref|ID|Transaction)|Birr\s*Ref)\s*[:=\-]?\s*([0-9]{8,18})', re.IGNORECASE),
     ]
 
     # 2. Patterns for Payment Amount in ETB / Birr
     AMOUNT_PATTERNS = [
-        re.compile(r'(?:Amount|Total\s*Amount|Credited|Transferred|Paid|መጠን)\s*[:=\-]?\s*(?:ETB|Birr|USD|ብር)?\s*([0-9]{1,6}(?:\.[0-9]{1,2})?)\s*(?:ETB|Birr|ብር)?', re.IGNORECASE),
-        re.compile(r'(?:ETB|Birr|ብር)\s*([0-9]{1,6}(?:\.[0-9]{1,2})?)', re.IGNORECASE),
-        re.compile(r'([0-9]{1,6}(?:\.[0-9]{1,2})?)\s*(?:ETB|Birr|ብር)', re.IGNORECASE),
-        re.compile(r'(?:credited\s+with|deposited)\s*([0-9]{1,6}(?:\.[0-9]{1,2})?)', re.IGNORECASE),
+        # Labelled Amount: "Amount: ETB 50.00" / "መጠን: 50.00 ብር"
+        re.compile(
+            r'(?:Amount|Total\s*Amount|Credited|Transferred|Paid|Deposited|መጠን|የተከፈለው)\s*[:=\-]?\s*(?:ETB|Birr|USD|ብር)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)\s*(?:ETB|Birr|ብር)?',
+            re.IGNORECASE
+        ),
+        # Currency prefix: "ETB 50.00" or "Birr 50" or "ብር 50"
+        re.compile(r'(?:ETB|Birr|ብር)\s*[:=\-]?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE),
+        # Currency suffix: "50.00 ETB" or "50.00 Birr" or "50 ብር"
+        re.compile(r'([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)\s*(?:ETB|Birr|ብር)', re.IGNORECASE),
+        # Verb with amount: "credited with 50.00", "deposited 50.00"
+        re.compile(r'(?:credited\s+with|deposited|received|paid)\s+(?:ETB|Birr|ብር)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE),
     ]
 
-    # 3. Patterns for Payer Name
+    # 3. Patterns for Payer / Sender Name
     PAYER_NAME_PATTERNS = [
-        re.compile(r'(?:Payer(?:\s*Name)?|From|Sender|Debited\s*From|received\s+(?:[0-9.]+\s*ETB\s+)?from)\s*[:=\-]?\s*([A-Za-z\s]{2,30}?)(?=$|\r|\n|\.|\,|(?:Payer|Account|Date|with|on|\())', re.IGNORECASE),
+        re.compile(
+            r'(?:Payer(?:\s*Name)?|From|Sender|Debited\s*From|received\s+(?:[0-9,.]+\s*(?:ETB|Birr)?\s+)?from)\s*[:=\-]?\s*([A-Za-z\s]{2,35}?)(?=$|\r|\n|\.|\,|(?:Payer|Account|Date|with|on|to|\())',
+            re.IGNORECASE
+        ),
         re.compile(r'(?:የከፋዩ\s*ስም|ከ)\s*[:=\-]?\s*([^\r\n,.]+)', re.IGNORECASE)
     ]
 
@@ -42,28 +67,55 @@ class CBEEmailParserService:
 
     IGNORED_WORDS = {
         "NOTIFICATION", "CONFIRMATION", "TRANSACTION", "SUCCESS",
-        "FAILED", "PENDING", "DEPOSIT", "CREDIT", "PAYMENT", "ACCOUNT"
+        "FAILED", "PENDING", "DEPOSIT", "CREDIT", "PAYMENT", "ACCOUNT",
+        "ETHIOFORMAT", "BANKING", "COMMERCIAL", "ETHIOPIA", "CUSTOMER"
     }
+
+    @staticmethod
+    def clean_raw_content(raw_html_or_text: str) -> str:
+        """
+        Strips HTML tags, decodes HTML entities (&nbsp;, &amp;, etc.),
+        and normalizes whitespace for reliable regex tokenization.
+        """
+        if not raw_html_or_text:
+            return ""
+
+        # Decode HTML entities
+        text = html.unescape(raw_html_or_text)
+
+        # Replace non-breaking spaces and special whitespace
+        text = text.replace('\xa0', ' ').replace('&nbsp;', ' ')
+
+        # Strip HTML tags
+        text = re.sub(r'<[^>]+>', ' ', text)
+
+        # Normalize redundant spaces while preserving lines
+        lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in text.splitlines()]
+        return "\n".join(line for line in lines if line)
 
     @classmethod
     def parse_full_cbe_payload(cls, raw_text: str, subject: Optional[str] = None) -> Dict[str, Any]:
         """
         Parses all key fields from email payload:
-        - Transaction Reference / ID
+        - Transaction Reference / ID (FT number, TXN ref)
         - Payment Amount (ETB)
         - Payer Name
         - Account Number
         - Date & Time
         """
-        combined_text = f"{subject or ''}\n{raw_text or ''}"
+        clean_subj = cls.clean_raw_content(subject or "")
+        clean_body = cls.clean_raw_content(raw_text or "")
+        combined_text = f"{clean_subj}\n{clean_body}"
 
         # 1. Extract Transaction ID
         extracted_txn: Optional[str] = None
         for pattern in cls.TXN_PATTERNS:
             for match in pattern.finditer(combined_text):
                 candidate = match.group(1).strip()
-                if len(candidate) >= 5 and candidate.upper() not in cls.IGNORED_WORDS:
-                    extracted_txn = candidate
+                # Normalize candidate
+                clean_candidate = re.sub(r'[^A-Za-z0-9_-]', '', candidate)
+                if len(clean_candidate) >= 5 and clean_candidate.upper() not in cls.IGNORED_WORDS:
+                    extracted_txn = clean_candidate.upper()
                     break
             if extracted_txn:
                 break
@@ -76,7 +128,7 @@ class CBEEmailParserService:
                     val_str = match.group(1).replace(",", "").strip()
                     val = float(val_str)
                     if 1.0 <= val <= 100000.0:
-                        extracted_amount = val
+                        extracted_amount = round(val, 2)
                         break
                 except (ValueError, TypeError):
                     continue
@@ -90,7 +142,7 @@ class CBEEmailParserService:
             if match:
                 candidate = match.group(1).strip()
                 if len(candidate) >= 3 and candidate.upper() not in cls.IGNORED_WORDS:
-                    extracted_payer = candidate
+                    extracted_payer = candidate.strip()
                     break
 
         # 4. Extract Account Number
@@ -115,7 +167,8 @@ class CBEEmailParserService:
             "payer_name": extracted_payer,
             "account_number": extracted_acc,
             "date_time": extracted_date,
-            "currency": "ETB"
+            "currency": "ETB",
+            "raw_snippet": combined_text[:300]
         }
 
 cbe_email_parser = CBEEmailParserService()
