@@ -537,11 +537,11 @@ async def check_transaction_status(session_id: str):
         except Exception as e:
             safe_print(f"[Supabase Status Check Notice] {e}")
 
-    # 5. On-demand IMAP scan during polling (cooldown: 4 seconds)
+    # 5. On-demand IMAP scan during polling (cooldown: 2 seconds)
     if submitted_ref and cbe_imap_service.is_configured():
         now = time.time()
         last_check = _last_imap_check_time.get(session_id, 0)
-        if now - last_check >= 4.0:
+        if now - last_check >= 2.0:
             _last_imap_check_time[session_id] = now
             try:
                 await asyncio.to_thread(cbe_imap_service.check_gmail_receipts, submitted_ref)

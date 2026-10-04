@@ -156,24 +156,55 @@ export function PaymentModal({
       } catch {
         // Continue polling silently
       }
-    }, 2500);
+    }, 1800);
   };
 
   const handleManualRecheck = async () => {
     if (!sessionId) return;
+    setIsSubmitting(true);
     try {
-      const res = await checkTransactionStatus(sessionId);
-      if (res.status === "approved" && res.verified) {
+      const cleanRef = transactionRef.trim().toUpperCase();
+      const res = await submitCBETransaction(
+        sessionId,
+        cleanRef || "CHECK",
+        payerName.trim() || undefined,
+        payerPhone.trim() || undefined
+      );
+      if (res.status === "approved" && res.download_url) {
         if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
         setIsPolling(false);
+        setIsSubmitting(false);
         confetti({
           particleCount: 100,
           spread: 80,
           origin: { y: 0.6 },
         });
-        onPaymentSuccess(res);
+        onPaymentSuccess({
+          status: "approved",
+          session_id: sessionId,
+          transaction_ref: cleanRef,
+          amount_expected: res.amount_expected,
+          verified: true,
+          download_url: res.download_url,
+          file_name: res.file_name,
+        });
+      } else {
+        const statusRes = await checkTransactionStatus(sessionId);
+        setIsSubmitting(false);
+        if (statusRes.status === "approved" && statusRes.verified) {
+          if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
+          setIsPolling(false);
+          confetti({
+            particleCount: 100,
+            spread: 80,
+            origin: { y: 0.6 },
+          });
+          onPaymentSuccess(statusRes);
+        }
       }
-    } catch {}
+    } catch {
+      setIsSubmitting(false);
+    }
   };
 
   const handleSubmitTxn = async (e?: React.FormEvent) => {

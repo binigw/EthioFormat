@@ -174,44 +174,60 @@ class CBEImapService:
         mail = None
 
         try:
-            # 1. Connect and login via SSL
-            mail = imaplib.IMAP4_SSL(self.server, self.port, timeout=15)
+            # 1. Connect and login via SSL with fast 8-second timeout
+            mail = imaplib.IMAP4_SSL(self.server, self.port, timeout=8)
             mail.login(self.user, self.password)
-            mail.select("INBOX")
 
             email_ids_to_check = set()
             clean_target = re.sub(r'[^A-Z0-9]', '', target_txn_ref.upper()) if target_txn_ref else None
 
-            # 2. Targeted search if user provided a transaction ID
-            if clean_target and len(clean_target) >= 4:
-                safe_print(f"[CBE IMAP] Performing targeted IMAP search for Txn ID: '{clean_target}'...")
-                for query in [f'TEXT "{clean_target}"', f'BODY "{clean_target}"', f'SUBJECT "{clean_target}"']:
-                    try:
-                        status_t, resp_t = mail.search(None, query)
-                        if status_t == "OK" and resp_t and resp_t[0]:
-                            for eid in resp_t[0].split():
-                                email_ids_to_check.add(eid)
-                    except Exception:
-                        pass
+            # Try selecting folders: INBOX and All Mail
+            folders_to_try = ["INBOX"]
+            if clean_target:
+                folders_to_try.append('"[Gmail]/All Mail"')
 
-            # 3. Search UNSEEN
-            try:
-                status_unseen, resp_unseen = mail.search(None, "UNSEEN")
-                if status_unseen == "OK" and resp_unseen and resp_unseen[0]:
-                    for eid in resp_unseen[0].split():
-                        email_ids_to_check.add(eid)
-            except Exception as e_search:
-                safe_print(f"[CBE IMAP] Notice in search UNSEEN: {e_search}")
+            for folder in folders_to_try:
+                try:
+                    status_sel, _ = mail.select(folder)
+                    if status_sel != "OK":
+                        continue
 
-            # 4. Search ALL to capture last 50 recent messages
-            try:
-                status_all, resp_all = mail.search(None, "ALL")
-                if status_all == "OK" and resp_all and resp_all[0]:
-                    all_ids = resp_all[0].split()
-                    for eid in all_ids[-50:]:
-                        email_ids_to_check.add(eid)
-            except Exception as e_all:
-                safe_print(f"[CBE IMAP] Notice in search ALL: {e_all}")
+                    # 2. Targeted search if user provided a transaction ID
+                    if clean_target and len(clean_target) >= 4:
+                        safe_print(f"[CBE IMAP] Performing targeted IMAP search for Txn ID: '{clean_target}' in {folder}...")
+                        for query in [f'TEXT "{clean_target}"', f'BODY "{clean_target}"', f'SUBJECT "{clean_target}"']:
+                            try:
+                                status_t, resp_t = mail.search(None, query)
+                                if status_t == "OK" and resp_t and resp_t[0]:
+                                    for eid in resp_t[0].split():
+                                        email_ids_to_check.add(eid)
+                            except Exception:
+                                pass
+
+                    # 3. Search UNSEEN in INBOX
+                    if folder == "INBOX":
+                        try:
+                            status_unseen, resp_unseen = mail.search(None, "UNSEEN")
+                            if status_unseen == "OK" and resp_unseen and resp_unseen[0]:
+                                for eid in resp_unseen[0].split():
+                                    email_ids_to_check.add(eid)
+                        except Exception as e_search:
+                            safe_print(f"[CBE IMAP] Notice in search UNSEEN: {e_search}")
+
+                        # 4. Search ALL to capture recent messages
+                        try:
+                            status_all, resp_all = mail.search(None, "ALL")
+                            if status_all == "OK" and resp_all and resp_all[0]:
+                                all_ids = resp_all[0].split()
+                                for eid in all_ids[-35:]:
+                                    email_ids_to_check.add(eid)
+                        except Exception as e_all:
+                            safe_print(f"[CBE IMAP] Notice in search ALL: {e_all}")
+
+                    if clean_target and len(email_ids_to_check) > 0:
+                        break  # Found match, no need to check other folders
+                except Exception as folder_ex:
+                    safe_print(f"[CBE IMAP] Notice searching folder {folder}: {folder_ex}")
 
             if not email_ids_to_check:
                 try:
