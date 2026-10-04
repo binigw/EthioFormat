@@ -63,13 +63,13 @@ class StorageService:
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """
         Retrieves session data from:
-        1. In-memory dictionary
+        1. In-memory dictionary (if already paid)
         2. Persistent disk metadata (session_metadata.json)
         3. Supabase Storage (theses/{session_id}/status.json)
         4. Local file fallback
         """
-        # 1. In-memory check
-        if session_id in self._sessions:
+        # If in-memory is already marked paid, return immediately
+        if session_id in self._sessions and self._sessions[session_id].get("is_paid", False):
             return self._sessions[session_id]
 
         # 2. Disk metadata check
@@ -80,7 +80,8 @@ class StorageService:
                 with open(meta_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     self._sessions[session_id] = data
-                    return data
+                    if data.get("is_paid", False):
+                        return data
         except Exception as e:
             print(f"[StorageService] Disk metadata read error for {session_id}: {e}")
 
@@ -102,6 +103,10 @@ class StorageService:
                     return data
             except Exception:
                 pass
+
+        # In-memory fallback if disk had no newer info
+        if session_id in self._sessions:
+            return self._sessions[session_id]
 
         # 4. File existence fallback
         session_dir = self.staging_dir / session_id

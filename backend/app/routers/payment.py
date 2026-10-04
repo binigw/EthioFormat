@@ -563,10 +563,26 @@ async def download_formatted_thesis(session_id: str):
             )
 
     docx_path = session.get("formatted_docx_path")
-    if not docx_path or not Path(docx_path).exists():
+    target_path = Path(docx_path) if docx_path else (storage_service.get_session_dir(session_id) / "formatted_thesis.docx")
+
+    if not target_path.exists() and storage_service.supabase_client:
+        try:
+            bucket = settings.SUPABASE_BUCKET_NAME
+            filename_try = session.get("download_filename") or session.get("original_filename", "Formatted_Thesis.docx")
+            if not filename_try.startswith("Formatted_"):
+                filename_try = f"Formatted_{filename_try}"
+            cloud_bytes = storage_service.supabase_client.storage.from_(bucket).download(f"theses/{session_id}/{filename_try}")
+            if cloud_bytes:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(target_path, "wb") as f_out:
+                    f_out.write(cloud_bytes)
+        except Exception as e:
+            safe_print(f"[Supabase Download Fallback] Notice: {e}")
+
+    if not target_path.exists():
         fallback_p = storage_service.get_session_dir(session_id) / "formatted_thesis.docx"
         if fallback_p.exists():
-            docx_path = str(fallback_p)
+            target_path = fallback_p
         else:
             raise HTTPException(status_code=404, detail="Formatted file missing. Please regenerate.")
 
@@ -575,7 +591,7 @@ async def download_formatted_thesis(session_id: str):
         filename = f"{filename}.docx"
 
     return FileResponse(
-        path=docx_path,
+        path=str(target_path),
         filename=filename,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
