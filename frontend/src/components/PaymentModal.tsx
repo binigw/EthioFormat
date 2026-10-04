@@ -470,11 +470,16 @@ export function PaymentModal({
                   </button>
                 </div>
                 {pollCount > 3 && (
-                  <div className="text-[11px] text-amber-300/90 bg-amber-950/40 p-2 rounded-lg border border-amber-900/40 flex items-start gap-1.5">
-                    <HelpCircle className="h-3.5 w-3.5 text-amber-400 flex-shrink-0 mt-0.5" />
-                    <span>
-                      Please ensure the transfer was completed in your banking app. If your transfer was just sent, it takes a few moments for the bank notification to arrive.
-                    </span>
+                  <div className="text-[11px] text-amber-300/95 bg-amber-950/40 p-2.5 rounded-xl border border-amber-900/50 flex items-start gap-2">
+                    <HelpCircle className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-medium text-amber-200">
+                        የባንክ ማረጋገጫ በመጠባበቅ ላይ ነው...
+                      </p>
+                      <p className="text-[10.5px] text-amber-300/80 leading-relaxed">
+                        እባክዎ በባንክ መተግበሪያዎ (CBE ወይም EBIRR/COOPay) ክፍያው መጠናቀቁን ያረጋግጡ። ክፍያውን አሁን የላኩት ከሆነ ባንኩ ደረሰኙን እስኪያደርስ ጥቂት ሰከንዶች በትዕግስት ይጠብቁ።
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
