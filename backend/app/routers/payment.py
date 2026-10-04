@@ -29,6 +29,17 @@ SAFE_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]+$")
 # In-memory transaction registry fallback
 _local_transactions_db: Dict[str, Dict[str, Any]] = {}
 
+@router.get("/cbe-details")
+def get_cbe_details():
+    """
+    Returns the official Commercial Bank of Ethiopia (CBE) account details.
+    """
+    return {
+        "status": "success",
+        "cbe_account_number": settings.CBE_ACCOUNT_NUMBER,
+        "cbe_account_name": settings.CBE_ACCOUNT_NAME
+    }
+
 @router.post("/initiate-cbe-payment", response_model=InitiateCBEPaymentResponse)
 async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
     """
@@ -166,7 +177,6 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     if existing_status == "pending" and cbe_imap_service.is_configured():
         try:
             await asyncio.to_thread(cbe_imap_service.check_gmail_receipts)
-            # Re-check status if verified by immediate IMAP read
             if session.get("is_paid", False) or _local_transactions_db.get(clean_ref, {}).get("status") == "approved":
                 existing_status = "approved"
         except Exception as e:

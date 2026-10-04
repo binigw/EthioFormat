@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { formatETB } from "@/lib/utils";
 import { PricingDetail, TransactionStatusResponse, CBEPaymentInitiationResponse } from "@/types";
-import { initiateCBEPayment, submitCBETransaction, checkTransactionStatus } from "@/lib/api";
+import { initiateCBEPayment, submitCBETransaction, checkTransactionStatus, fetchCBEDetails } from "@/lib/api";
 import {
   X,
   Building,
@@ -27,6 +27,8 @@ interface PaymentModalProps {
   totalPages: number;
   pricing: PricingDetail;
   universityName: string;
+  cbeAccountNumber?: string;
+  cbeAccountName?: string;
   onPaymentSuccess: (data: TransactionStatusResponse) => void;
 }
 
@@ -37,6 +39,8 @@ export function PaymentModal({
   totalPages,
   pricing,
   universityName,
+  cbeAccountNumber,
+  cbeAccountName,
   onPaymentSuccess,
 }: PaymentModalProps) {
   const [initData, setInitData] = useState<CBEPaymentInitiationResponse | null>(null);
@@ -76,8 +80,23 @@ export function PaymentModal({
       })
       .catch((err) => {
         if (mounted) {
-          setErrorMessage(err.message || "Failed to load CBE payment details.");
-          setIsInitializing(false);
+          // If session expired or network glitch, fallback gracefully to preview/public details
+          fetchCBEDetails().then((cbe) => {
+            if (mounted) {
+              setInitData({
+                status: "pending",
+                session_id: sessionId,
+                amount_expected: pricing.total_fee,
+                currency: pricing.currency || "ETB",
+                total_pages: totalPages,
+                cbe_account_number: cbeAccountNumber || cbe.cbe_account_number,
+                cbe_account_name: cbeAccountName || cbe.cbe_account_name,
+                pricing_breakdown: pricing,
+                instructions: "Please transfer the exact amount to CBE and submit your Transaction ID.",
+              });
+              setIsInitializing(false);
+            }
+          });
         }
       });
 
@@ -85,7 +104,7 @@ export function PaymentModal({
       mounted = false;
       if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
     };
-  }, [isOpen, sessionId]);
+  }, [isOpen, sessionId, cbeAccountNumber, cbeAccountName, pricing, totalPages]);
 
   // Polling loop
   const startPollingStatus = () => {
@@ -184,8 +203,8 @@ export function PaymentModal({
 
   if (!isOpen) return null;
 
-  const cbeAccNumber = initData?.cbe_account_number || "1000123456789";
-  const cbeAccName = initData?.cbe_account_name || "EthioFormat / Thesis Automation Services";
+  const cbeAccNumber = initData?.cbe_account_number || cbeAccountNumber || "1000123456789";
+  const cbeAccName = initData?.cbe_account_name || cbeAccountName || "EthioFormat / Thesis Automation Services";
   const exactAmount = initData?.amount_expected ?? pricing.total_fee;
 
   return (

@@ -26,5 +26,7 @@ class PreviewResponseModel(BaseModel):
     total_pages: int
     preview_pages: List[str]  # Base64 data URLs for pages 1, 2, 3
     pricing: PricingDetailModel
+    cbe_account_number: str = "1000123456789"
+    cbe_account_name: str = "EthioFormat / Thesis Automation Services"
     metadata: PreviewMetadataModel
     error_message: Optional[str] = None

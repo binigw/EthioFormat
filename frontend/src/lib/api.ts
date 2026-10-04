@@ -35,6 +35,22 @@ export async function uploadAndPreviewThesis(
 }
 
 /**
+ * Fetches official CBE Account details from backend.
+ */
+export async function fetchCBEDetails(): Promise<{ cbe_account_number: string; cbe_account_name: string }> {
+  try {
+    const response = await fetch(`${API_BASE}/cbe-details`);
+    if (response.ok) {
+      return response.json();
+    }
+  } catch {}
+  return {
+    cbe_account_number: "1000123456789",
+    cbe_account_name: "EthioFormat / Thesis Automation Services",
+  };
+}
+
+/**
  * Initiates CBE Birr Payment, returns CBE account details and expected amount.
  */
 export async function initiateCBEPayment(

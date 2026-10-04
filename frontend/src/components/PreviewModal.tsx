@@ -1,12 +1,12 @@
 "use client";
 
 import React, { useState } from "react";
-import { PreviewResponse, PaymentVerificationResponse } from "@/types";
+import { PreviewResponse, TransactionStatusResponse } from "@/types";
 import { PageViewer } from "@/components/PageViewer";
 import { BlurPaywallHook } from "@/components/BlurPaywallHook";
 import { PaymentModal } from "@/components/PaymentModal";
 import { DownloadCard } from "@/components/DownloadCard";
-import { X, Building2, FileCheck2, Sparkles, Layers } from "lucide-react";
+import { X, FileCheck2, Sparkles } from "lucide-react";
 
 interface PreviewModalProps {
   isOpen: boolean;
@@ -22,19 +22,20 @@ export function PreviewModal({
   onReset,
 }: PreviewModalProps) {
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
-  const [paymentResult, setPaymentResult] = useState<PaymentVerificationResponse | null>(null);
+  const [paymentResult, setPaymentResult] = useState<TransactionStatusResponse | null>(null);
 
   if (!isOpen) return null;
 
-  const handlePaymentSuccess = (data: PaymentVerificationResponse) => {
+  const handlePaymentSuccess = (data: TransactionStatusResponse) => {
     setPaymentResult(data);
     setIsPaymentModalOpen(false);
 
     // Trigger automatic browser download
     if (data.download_url) {
       let downloadUrl = data.download_url;
+      const backendBase = (process.env.NEXT_PUBLIC_API_URL || "https://ethioformat.onrender.com/api").replace(/\/api\/?$/, "");
       if (downloadUrl.startsWith("/api/download/")) {
-        downloadUrl = downloadUrl.replace("/api/download/", "/api/backend/download/");
+        downloadUrl = `${backendBase}${downloadUrl}`;
       }
       const link = document.createElement("a");
       link.href = downloadUrl;
@@ -47,17 +48,17 @@ export function PreviewModal({
 
   return (
     <>
-      <div className="fixed inset-0 z-40 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-slate-950/80 backdrop-blur-md overflow-y-auto animate-in fade-in-50 duration-200">
-        <div className="relative w-full max-w-5xl my-8 bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh]">
+      <div className="fixed inset-0 z-40 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-slate-950/85 backdrop-blur-md overflow-y-auto animate-in fade-in-50 duration-200">
+        <div className="relative w-full max-w-5xl my-8 bg-slate-900 text-slate-100 rounded-3xl shadow-2xl border border-slate-800 overflow-hidden flex flex-col max-h-[92vh]">
           {/* Top Bar */}
-          <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800 flex-shrink-0">
+          <div className="px-6 py-4 bg-slate-950 text-white flex items-center justify-between border-b border-slate-800 flex-shrink-0">
             <div className="flex items-center gap-3 overflow-hidden">
               <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex-shrink-0">
                 <FileCheck2 className="h-5 w-5" />
               </div>
               <div className="truncate">
                 <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-base truncate">
+                  <h3 className="font-bold text-base truncate text-white">
                     {previewData.metadata.filename}
                   </h3>
                   <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-semibold border border-emerald-500/30">
@@ -75,7 +76,7 @@ export function PreviewModal({
             <button
               type="button"
               onClick={onClose}
-              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors ml-4"
+              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors ml-4 cursor-pointer"
               title="Close Preview"
             >
               <X className="h-5 w-5" />
@@ -83,7 +84,7 @@ export function PreviewModal({
           </div>
 
           {/* Modal Scrollable Content */}
-          <div className="p-4 sm:p-6 md:p-8 overflow-y-auto flex-1 bg-slate-50">
+          <div className="p-4 sm:p-6 md:p-8 overflow-y-auto flex-1 bg-slate-950">
             {paymentResult && paymentResult.verified ? (
               <DownloadCard
                 paymentData={paymentResult}
@@ -96,14 +97,14 @@ export function PreviewModal({
             ) : (
               <div className="max-w-4xl mx-auto space-y-6">
                 {/* Free Preview Banner */}
-                <div className="flex items-center justify-between p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-950 text-xs sm:text-sm">
+                <div className="flex items-center justify-between p-3.5 rounded-2xl bg-emerald-950/40 border border-emerald-800/80 text-emerald-200 text-xs sm:text-sm">
                   <div className="flex items-center gap-2">
                     <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
                     <span className="font-bold">
                       Free Preview (First 3 Pages: Cover, Approval Sheet & TOC)
                     </span>
                   </div>
-                  <span className="font-mono text-emerald-800 font-semibold">
+                  <span className="font-mono text-emerald-400 font-semibold">
                     100% Guaranteed Layout
                   </span>
                 </div>
@@ -135,6 +136,8 @@ export function PreviewModal({
           totalPages={previewData.total_pages}
           pricing={previewData.pricing}
           universityName={previewData.metadata.university}
+          cbeAccountNumber={previewData.cbe_account_number}
+          cbeAccountName={previewData.cbe_account_name}
           onPaymentSuccess={handlePaymentSuccess}
         />
       )}

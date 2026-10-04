@@ -55,6 +55,8 @@ export interface PreviewResponse {
   total_pages: number;
   preview_pages: string[]; // Base64 PNG data URLs
   pricing: PricingDetail;
+  cbe_account_number?: string;
+  cbe_account_name?: string;
   metadata: {
     filename: string;
     formatted_at: string;
