@@ -2,31 +2,37 @@ import pytest
 import email
 from fastapi.testclient import TestClient
 from app.main import app
-from app.config import settings
-from app.services.cbe_email_parser import CBEEmailParserService
-from app.services.cbe_imap_service import cbe_imap_service
 from app.services.pricing_engine import PricingEngine
+from app.services.cbe_email_parser import CBEEmailParserService
 from app.services.storage_service import StorageService
+from app.services.cbe_imap_service import cbe_imap_service
 
 client = TestClient(app)
 
 def test_root_endpoint():
-    res_get = client.get("/")
-    assert res_get.status_code == 200
-    data = res_get.json()
+    res = client.get("/")
+    assert res.status_code == 200
+    data = res.json()
     assert data["status"] == "alive"
+    assert "EthioFormat" in data["app"]
 
+    # HEAD request support for uptime monitors (UptimeRobot, Render, Netlify)
     res_head = client.head("/")
     assert res_head.status_code == 200
 
 def test_cbe_details_endpoint():
-    response = client.get("/api/cbe-details")
-    assert response.status_code == 200
-    data = response.json()
+    res = client.get("/api/cbe-details")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
     assert "cbe_account_number" in data
     assert "cbe_account_name" in data
-    assert data["cbe_account_number"] == settings.CBE_ACCOUNT_NUMBER
-    assert data["cbe_account_name"] == settings.CBE_ACCOUNT_NAME
+    assert data["cbe_account_number"] == "1000659424936"
+    assert data["cbe_account_name"] == "BINIAM KEBEDE AMADE"
+
+    # Test route alias
+    res_alias = client.get("/api/cbe-details")
+    assert res_alias.status_code == 200
 
 def test_pricing_calculation():
     # 20 pages base
@@ -154,3 +160,22 @@ def test_storage_persistence_and_lookup():
     sess_paid = StorageService().get_session(session_id)
     assert sess_paid["is_paid"] is True
     assert sess_paid["tx_ref"] == "FT2699887766"
+
+def test_preverified_transaction_flow():
+    service = StorageService()
+    txn_ref = "2798853639"
+    service.register_preverified_transaction(
+        txn_ref=txn_ref,
+        data={
+            "transaction_ref": txn_ref,
+            "amount": 63.50,
+            "payer_name": "BINIAM KEBEDE AMADE",
+            "source": "gmail_imap"
+        }
+    )
+
+    # Check retrieval
+    res = service.get_preverified_transaction("2798853639")
+    assert res is not None
+    assert res["amount"] == 63.50
+    assert res["transaction_ref"] == txn_ref

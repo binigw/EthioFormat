@@ -1,24 +1,33 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { formatETB } from "@/lib/utils";
-import { PricingDetail, TransactionStatusResponse, CBEPaymentInitiationResponse } from "@/types";
-import { initiateCBEPayment, submitCBETransaction, checkTransactionStatus, fetchCBEDetails } from "@/lib/api";
 import {
   X,
-  Building,
-  ShieldCheck,
-  CheckCircle2,
-  Loader2,
-  ArrowRight,
-  Copy,
   Check,
+  Copy,
   Lock,
-  Smartphone,
+  ArrowRight,
+  Loader2,
   AlertCircle,
+  Building,
+  Smartphone,
   Clock,
+  ShieldCheck,
+  RefreshCw,
+  HelpCircle,
 } from "lucide-react";
 import confetti from "canvas-confetti";
+import {
+  initiateCBEPayment,
+  submitCBETransaction,
+  checkTransactionStatus,
+  fetchCBEDetails,
+} from "@/lib/api";
+import {
+  PricingDetail,
+  CBEPaymentInitiationResponse,
+  TransactionStatusResponse,
+} from "@/types";
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -26,10 +35,10 @@ interface PaymentModalProps {
   sessionId: string;
   totalPages: number;
   pricing: PricingDetail;
-  universityName: string;
   cbeAccountNumber?: string;
   cbeAccountName?: string;
-  onPaymentSuccess: (data: TransactionStatusResponse) => void;
+  universityName: string;
+  onPaymentSuccess: (statusData: TransactionStatusResponse) => void;
 }
 
 export function PaymentModal({
@@ -38,38 +47,49 @@ export function PaymentModal({
   sessionId,
   totalPages,
   pricing,
-  universityName,
   cbeAccountNumber,
   cbeAccountName,
+  universityName,
   onPaymentSuccess,
 }: PaymentModalProps) {
   const [initData, setInitData] = useState<CBEPaymentInitiationResponse | null>(null);
-  const [isInitializing, setIsInitializing] = useState(true);
+  const [isInitializing, setIsInitializing] = useState(false);
 
-  // User inputs
+  // Form input states
   const [transactionRef, setTransactionRef] = useState("");
   const [payerName, setPayerName] = useState("");
   const [payerPhone, setPayerPhone] = useState("");
 
-  // Validation & Status States
-  const [txnInputError, setTxnInputError] = useState<string | null>(null);
+  // Submission & Polling states
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
-  const [statusMessage, setStatusMessage] = useState("");
+  const [pollCount, setPollCount] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [txnInputError, setTxnInputError] = useState<string | null>(null);
+
+  // Clipboard copy feedback
   const [copiedAccount, setCopiedAccount] = useState(false);
   const [copiedAmount, setCopiedAmount] = useState(false);
 
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 1. Initiate CBE Details on modal open
+  const formatETB = (amount: number) => {
+    return new Intl.NumberFormat("en-ET", {
+      style: "currency",
+      currency: "ETB",
+      minimumFractionDigits: 2,
+    }).format(amount);
+  };
+
+  // Initialize CBE payment metadata when modal opens
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !sessionId) return;
 
     let mounted = true;
     setIsInitializing(true);
     setErrorMessage(null);
     setTxnInputError(null);
+    setPollCount(0);
 
     initiateCBEPayment(sessionId)
       .then((data) => {
@@ -78,9 +98,8 @@ export function PaymentModal({
           setIsInitializing(false);
         }
       })
-      .catch((err) => {
+      .catch(() => {
         if (mounted) {
-          // If session expired or network glitch, fallback gracefully to preview/public details
           fetchCBEDetails().then((cbe) => {
             if (mounted) {
               setInitData({
@@ -109,22 +128,21 @@ export function PaymentModal({
   // Polling loop
   const startPollingStatus = () => {
     setIsPolling(true);
-    setStatusMessage("Listening for CBE confirmation webhook... This updates automatically upon payment.");
+    setPollCount(0);
 
     if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
 
     pollingTimerRef.current = setInterval(async () => {
       try {
+        setPollCount((prev) => prev + 1);
         const res = await checkTransactionStatus(sessionId);
         if (res.status === "approved" && res.verified) {
           if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
           setIsPolling(false);
-          setStatusMessage("Payment Verified! Unlocking full formatted thesis...");
 
-          // Confetti celebration
           confetti({
-            particleCount: 90,
-            spread: 75,
+            particleCount: 100,
+            spread: 80,
             origin: { y: 0.6 },
           });
 
@@ -135,30 +153,46 @@ export function PaymentModal({
           setIsPolling(false);
           setErrorMessage(res.message || "Payment verification failed. Please check the amount transferred.");
         }
-      } catch (e) {
+      } catch {
         // Continue polling silently
       }
     }, 2500);
   };
 
-  const handleSubmitTxn = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleManualRecheck = async () => {
+    if (!sessionId) return;
+    try {
+      const res = await checkTransactionStatus(sessionId);
+      if (res.status === "approved" && res.verified) {
+        if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
+        setIsPolling(false);
+        confetti({
+          particleCount: 100,
+          spread: 80,
+          origin: { y: 0.6 },
+        });
+        onPaymentSuccess(res);
+      }
+    } catch {}
+  };
+
+  const handleSubmitTxn = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     setErrorMessage(null);
 
-    // Custom Validation: Check if Transaction ID is empty or whitespace
     if (!transactionRef || !transactionRef.trim()) {
-      setTxnInputError("Please enter your Transaction ID.");
+      setTxnInputError("Please enter your Transaction ID (e.g. FT... or 10-digit code).");
       return;
     }
 
     setTxnInputError(null);
     setIsSubmitting(true);
-    setStatusMessage("Registering CBE Transaction ID...");
 
     try {
+      const cleanRef = transactionRef.trim().toUpperCase();
       const res = await submitCBETransaction(
         sessionId,
-        transactionRef.trim(),
+        cleanRef,
         payerName.trim() || undefined,
         payerPhone.trim() || undefined
       );
@@ -166,22 +200,23 @@ export function PaymentModal({
       setIsSubmitting(false);
 
       if (res.status === "approved" && res.download_url) {
+        if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
+        setIsPolling(false);
         confetti({
-          particleCount: 90,
-          spread: 75,
+          particleCount: 100,
+          spread: 80,
           origin: { y: 0.6 },
         });
         onPaymentSuccess({
           status: "approved",
           session_id: sessionId,
-          transaction_ref: transactionRef,
+          transaction_ref: cleanRef,
           amount_expected: res.amount_expected,
           verified: true,
           download_url: res.download_url,
           file_name: res.file_name,
         });
       } else {
-        // Start polling for the incoming email webhook / IMAP
         startPollingStatus();
       }
     } catch (err: any) {
@@ -229,7 +264,7 @@ export function PaymentModal({
           <button
             type="button"
             onClick={onClose}
-            disabled={isSubmitting || isPolling}
+            disabled={isSubmitting}
             className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
           >
             <X className="h-5 w-5" />
@@ -300,7 +335,7 @@ export function PaymentModal({
               </button>
             </div>
 
-            {/* Account Name with uppercase Tailwind class */}
+            {/* Account Name */}
             <div className="text-xs text-slate-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 pt-1.5 border-t border-slate-800/80">
               <span className="text-slate-400">Account Name:</span>
               <span className="font-bold text-white uppercase tracking-wider">{cbeAccName}</span>
@@ -308,19 +343,19 @@ export function PaymentModal({
           </div>
 
           {/* Transfer Instructions */}
-          <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-800/50 text-xs text-amber-200 space-y-1">
+          <div className="p-3.5 rounded-xl bg-amber-950/30 border border-amber-800/50 text-xs text-amber-200 space-y-1.5">
             <div className="font-bold flex items-center gap-1.5 text-amber-300">
               <Clock className="h-4 w-4 text-amber-400" />
               <span>How to pay & unlock instant download:</span>
             </div>
-            <ol className="list-decimal list-inside space-y-0.5 text-[11px] text-amber-300/90">
-              <li>Transfer <strong>{formatETB(exactAmount)}</strong> via CBE Mobile Banking or CBE Birr app.</li>
-              <li>Copy the <strong>Transaction ID / Reference (FT number)</strong> from the SMS or slip.</li>
+            <ol className="list-decimal list-inside space-y-1 text-[11px] text-amber-200/90 leading-relaxed">
+              <li>Transfer <strong>{formatETB(exactAmount)}</strong> via CBE Mobile Banking, CBE Birr, or COOPay app to account <strong>{cbeAccNumber}</strong>.</li>
+              <li>Copy the <strong>Transaction ID / Reference (FT number or 10-digit number)</strong> from the SMS or slip.</li>
               <li>Paste the Transaction ID below to verify and unlock your full thesis instantly.</li>
             </ol>
           </div>
 
-          {/* Transaction Submission Form with noValidate */}
+          {/* Transaction Submission Form */}
           <form onSubmit={handleSubmitTxn} noValidate className="space-y-4">
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
@@ -329,8 +364,8 @@ export function PaymentModal({
               </label>
               <input
                 type="text"
-                disabled={isSubmitting || isPolling}
-                placeholder="e.g. FT2609871234 or TXN987654"
+                disabled={isSubmitting}
+                placeholder="e.g. 2798853639 or FT2609871234"
                 value={transactionRef}
                 onChange={(e) => {
                   setTransactionRef(e.target.value.toUpperCase());
@@ -343,7 +378,6 @@ export function PaymentModal({
                 }`}
               />
 
-              {/* Custom UI Validation Message (No browser popup) */}
               {txnInputError && (
                 <p className="text-xs text-rose-400 font-medium flex items-center gap-1.5 mt-1 animate-in fade-in-50">
                   <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 text-rose-400" />
@@ -357,7 +391,7 @@ export function PaymentModal({
                 <label className="text-[11px] font-medium text-slate-400">Payer Name (Optional)</label>
                 <input
                   type="text"
-                  disabled={isSubmitting || isPolling}
+                  disabled={isSubmitting}
                   placeholder="e.g. Abebe Bikila"
                   value={payerName}
                   onChange={(e) => setPayerName(e.target.value)}
@@ -369,7 +403,7 @@ export function PaymentModal({
                 <label className="text-[11px] font-medium text-slate-400">Phone Number (Optional)</label>
                 <input
                   type="tel"
-                  disabled={isSubmitting || isPolling}
+                  disabled={isSubmitting}
                   placeholder="0911223344"
                   value={payerPhone}
                   onChange={(e) => setPayerPhone(e.target.value)}
@@ -386,12 +420,32 @@ export function PaymentModal({
             )}
 
             {isPolling && (
-              <div className="p-3 text-xs text-purple-200 bg-purple-950/40 rounded-xl border border-purple-800 flex items-center gap-2.5 animate-pulse">
-                <Loader2 className="h-4 w-4 animate-spin text-purple-400 flex-shrink-0" />
-                <div className="space-y-0.5">
-                  <div className="font-bold text-purple-100">Awaiting CBE Webhook Confirmation...</div>
-                  <div className="text-[11px] text-purple-300">Checking Transaction ID {transactionRef}</div>
+              <div className="p-3.5 text-xs text-purple-200 bg-purple-950/40 rounded-xl border border-purple-800/80 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <Loader2 className="h-4 w-4 animate-spin text-purple-400 flex-shrink-0" />
+                    <div>
+                      <div className="font-bold text-purple-100">Verifying with CBE Server...</div>
+                      <div className="text-[11px] text-purple-300 font-mono">Txn ID: {transactionRef}</div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleManualRecheck}
+                    className="flex items-center gap-1 text-[11px] px-2.5 py-1 bg-purple-900/60 hover:bg-purple-800 text-purple-200 rounded-lg border border-purple-700/60 transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    <span>Re-check</span>
+                  </button>
                 </div>
+                {pollCount > 3 && (
+                  <div className="text-[11px] text-amber-300/90 bg-amber-950/40 p-2 rounded-lg border border-amber-900/40 flex items-start gap-1.5">
+                    <HelpCircle className="h-3.5 w-3.5 text-amber-400 flex-shrink-0 mt-0.5" />
+                    <span>
+                      Please ensure the transfer was completed in your banking app. If your transfer was just sent, it takes a few moments for the bank notification to arrive.
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -404,12 +458,12 @@ export function PaymentModal({
                 {isSubmitting ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Submitting Reference...</span>
+                    <span>Verifying with CBE...</span>
                   </>
                 ) : isPolling ? (
                   <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Checking Status Live...</span>
+                    <RefreshCw className="h-4 w-4" />
+                    <span>Re-check Status Live...</span>
                   </>
                 ) : (
                   <>

@@ -28,6 +28,7 @@ SAFE_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 # In-memory transaction registry fallback
 _local_transactions_db: Dict[str, Dict[str, Any]] = {}
+_last_imap_check_time: Dict[str, float] = {}
 
 @router.get("/cbe-details")
 def get_cbe_details():
@@ -163,15 +164,23 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     existing_status = "pending"
     download_url = None
 
-    # 2. Check if this Txn ID was already pre-verified in Supabase
-    if client:
+    # 2. Check if pre-verified in Storage Service
+    preverified = storage_service.get_preverified_transaction(clean_ref)
+    if preverified:
+        safe_print(f"[CBE Submit Txn] Instant match! Txn '{clean_ref}' was pre-verified in storage: {preverified}")
+        existing_status = "approved"
+
+    # 3. Check if this Txn ID was already pre-verified in Supabase
+    if client and existing_status != "approved":
         try:
-            query = client.table("transactions").select("*").ilike("transaction_ref", clean_ref).execute()
+            query = client.table("transactions").select("*").ilike("transaction_ref", f"%{clean_ref}%").execute()
             if query.data and len(query.data) > 0:
                 rec = query.data[0]
-                existing_status = rec.get("status", "pending")
-                download_url = rec.get("download_url")
-                safe_print(f"[CBE Submit Txn] Found record in Supabase for '{clean_ref}': Status='{existing_status}'")
+                rec_status = rec.get("status", "pending")
+                if rec_status == "approved":
+                    existing_status = "approved"
+                    download_url = rec.get("download_url")
+                    safe_print(f"[CBE Submit Txn] Found approved record in Supabase for '{clean_ref}'")
             else:
                 client.table("transactions").upsert({
                     "session_id": payload.session_id,
@@ -189,22 +198,11 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
         existing_status = "approved"
         download_url = _local_transactions_db[clean_ref].get("download_url")
 
-    txn_record = {
-        "session_id": payload.session_id,
-        "amount_expected": amount_expected,
-        "transaction_ref": clean_ref,
-        "status": existing_status,
-        "payer_name": payload.payer_name,
-        "payer_phone": payload.payer_phone
-    }
-    _local_transactions_db[clean_ref] = txn_record
-    _local_transactions_db[payload.session_id] = txn_record
-
-    # 3. Trigger immediate on-demand Gmail IMAP check if configured
+    # 4. Trigger immediate targeted on-demand Gmail IMAP check if configured
     if existing_status != "approved" and cbe_imap_service.is_configured():
-        safe_print(f"[CBE Submit Txn] Triggering immediate on-demand Gmail IMAP scan for '{clean_ref}'...")
+        safe_print(f"[CBE Submit Txn] Triggering immediate targeted Gmail IMAP scan for '{clean_ref}'...")
         try:
-            await asyncio.to_thread(cbe_imap_service.check_gmail_receipts)
+            await asyncio.to_thread(cbe_imap_service.check_gmail_receipts, clean_ref)
             refreshed_session = storage_service.get_session(payload.session_id)
             if refreshed_session and refreshed_session.get("is_paid", False):
                 existing_status = "approved"
@@ -212,12 +210,12 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
             elif _local_transactions_db.get(clean_ref, {}).get("status") == "approved":
                 existing_status = "approved"
                 download_url = _local_transactions_db[clean_ref].get("download_url")
+            elif storage_service.get_preverified_transaction(clean_ref):
+                existing_status = "approved"
         except Exception as e:
             safe_print(f"[IMAP on-demand check notice] {e}")
-    elif not cbe_imap_service.is_configured():
-        safe_print(f"[CBE Submit Txn] Note: Gmail IMAP is not configured. Waiting for CBE Email Webhook / Make.com.")
 
-    # 4. If approved, mark session paid and return download URL
+    # 5. If approved, mark session paid and return download URL
     if existing_status == "approved" or session.get("is_paid", False):
         updated_session = storage_service.mark_session_paid(payload.session_id, clean_ref)
         safe_print(f"[CBE Submit Txn] ✅ Transaction '{clean_ref}' verified! Returning download URL.")
@@ -231,13 +229,24 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
             file_name=updated_session.get("download_filename", "Formatted_Thesis.docx")
         )
 
+    txn_record = {
+        "session_id": payload.session_id,
+        "amount_expected": amount_expected,
+        "transaction_ref": clean_ref,
+        "status": "pending",
+        "payer_name": payload.payer_name,
+        "payer_phone": payload.payer_phone
+    }
+    _local_transactions_db[clean_ref] = txn_record
+    _local_transactions_db[payload.session_id] = txn_record
+
     safe_print(f"[CBE Submit Txn] Transaction '{clean_ref}' registered with status 'pending'. Awaiting IMAP / Webhook receipt...")
     return SubmitCBETransactionResponse(
         status="pending",
         session_id=payload.session_id,
         transaction_ref=clean_ref,
         amount_expected=amount_expected,
-        message="Transaction ID registered. Checking Gmail IMAP receipts and awaiting confirmation..."
+        message="Transaction ID registered. Checking CBE receipts and awaiting confirmation..."
     )
 
 @router.post("/payment/cbe-email-webhook", response_model=CBEWebhookResponse)
@@ -262,109 +271,112 @@ async def cbe_email_webhook(
         subject=payload.subject
     )
 
-    final_txn_ref = (payload.transaction_id or parsed_meta.get("transaction_ref") or "").strip().upper()
-    final_amount = payload.amount if payload.amount is not None else parsed_meta.get("amount")
-    payer_name = parsed_meta.get("payer_name")
+    extracted_txn = parsed_meta.get("transaction_ref") or payload.transaction_id
+    extracted_amount = parsed_meta.get("amount") or payload.amount
+    payer_name = parsed_meta.get("payer_name") or payload.sender or payload.from_
 
-    safe_print(f"[CBE Webhook] Parsed metadata -> Txn ID: '{final_txn_ref}', Amount: {final_amount} ETB, Payer: '{payer_name}'")
+    safe_print(f"[CBE Webhook] Parsed: Txn='{extracted_txn}', Amount={extracted_amount} ETB, Payer='{payer_name}'")
 
-    if not final_txn_ref:
-        safe_print(f"[CBE Webhook] ❌ Failed to detect Transaction Reference in payload. Raw snippet: {raw_content[:200]}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Could not detect a valid CBE Transaction Reference / FT Number in email payload."
+    if not extracted_txn and not extracted_amount:
+        safe_print("[CBE Webhook] ⚠️ Could not extract Transaction ID or Amount from webhook payload.")
+        return CBEWebhookResponse(
+            status="ignored",
+            message="No CBE transaction reference or amount detected in payload.",
+            transaction_ref=None,
+            amount_detected=None
         )
 
-    if final_amount is None or final_amount <= 0:
-        safe_print(f"[CBE Webhook] ❌ Detected Txn '{final_txn_ref}' but could not extract a valid amount.")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Detected Transaction Ref '{final_txn_ref}' but could not extract a valid payment amount."
-        )
+    final_txn_ref = extracted_txn.strip().upper() if extracted_txn else f"TXN-UNKWN-{int(time.time())}"
+    final_amount = float(extracted_amount) if extracted_amount else 50.0
+
+    # Store in preverified cache
+    storage_service.register_preverified_transaction(
+        txn_ref=final_txn_ref,
+        data={
+            "transaction_ref": final_txn_ref,
+            "amount": final_amount,
+            "payer_name": payer_name,
+            "source": "webhook",
+            "subject": payload.subject,
+            "body": raw_content[:400]
+        }
+    )
 
     client = storage_service.supabase_client
     matched_session_id: Optional[str] = None
     expected_amount: float = 50.0
 
-    # 1. Query Supabase
+    # Step 1: Query Supabase transactions table by transaction_ref
     if client:
         try:
-            query = client.table("transactions").select("*").ilike("transaction_ref", f"%{final_txn_ref}%").execute()
-            if query.data and len(query.data) > 0:
-                matched_row = query.data[0]
+            res = client.table("transactions").select("*").ilike("transaction_ref", f"%{final_txn_ref}%").execute()
+            if res.data and len(res.data) > 0:
+                matched_row = res.data[0]
                 matched_session_id = matched_row.get("session_id")
                 expected_amount = float(matched_row.get("amount_expected", 50.0))
-                safe_print(f"[CBE Webhook] Matched via Supabase transactions -> Session: {matched_session_id}")
+                safe_print(f"[CBE Webhook] Matched session in Supabase: {matched_session_id}")
         except Exception as e:
-            safe_print(f"[CBE Webhook Supabase Query] Notice: {e}")
+            safe_print(f"[Supabase Webhook Search] Notice: {e}")
 
-    # 2. Check Disk & Memory Sessions
+    # Step 2: Check Local Disk & Memory Sessions
     if not matched_session_id:
-        clean_ref = re.sub(r'[^A-Z0-9]', '', final_txn_ref)
-        matched_sid = storage_service.find_session_by_txn_ref(clean_ref)
+        matched_sid = storage_service.find_session_by_txn_ref(final_txn_ref)
         if matched_sid:
             matched_session_id = matched_sid
             sess = storage_service.get_session(matched_sid)
             pricing = sess.get("pricing", {}) if sess else {}
             expected_amount = float(pricing.get("total_fee", 50.0))
-            safe_print(f"[CBE Webhook] Matched via Disk/Memory Session find_session_by_txn_ref -> Session: {matched_session_id}")
+            safe_print(f"[CBE Webhook] Matched session via disk/memory find_session_by_txn_ref: {matched_session_id}")
 
-    # 3. Check single unpaid session amount match fallback
+    # Step 3: Check in-memory transactions db
+    if not matched_session_id:
+        for sid, rec in _local_transactions_db.items():
+            cand = rec.get("transaction_ref", "")
+            if cand and (final_txn_ref in cand.upper() or cand.upper() in final_txn_ref):
+                matched_session_id = rec.get("session_id")
+                expected_amount = float(rec.get("amount_expected", 50.0))
+                safe_print(f"[CBE Webhook] Matched session via _local_transactions_db: {matched_session_id}")
+                break
+
+    # Step 4: Fallback - Match single active unpaid session by amount
     if not matched_session_id:
         all_sessions = storage_service.get_all_sessions()
-        unpaid_matching = []
+        unpaid = []
         for sid, sdata in all_sessions.items():
             if not sdata.get("is_paid", False):
                 pricing = sdata.get("pricing", {})
                 req_fee = float(pricing.get("total_fee", 50.0))
                 if abs(req_fee - final_amount) < 0.01:
-                    unpaid_matching.append((sid, req_fee))
+                    unpaid.append((sid, req_fee))
 
-        if len(unpaid_matching) == 1:
-            matched_session_id = unpaid_matching[0][0]
-            expected_amount = unpaid_matching[0][1]
-            safe_print(f"[CBE Webhook] Matched via single pending pricing amount match -> Session: {matched_session_id}")
+        if len(unpaid) == 1:
+            matched_session_id = unpaid[0][0]
+            expected_amount = unpaid[0][1]
+            safe_print(f"[CBE Webhook] Matched single pending session by price ({final_amount} ETB): {matched_session_id}")
 
     if not matched_session_id:
-        safe_print(f"[CBE Webhook] Txn '{final_txn_ref}' ({final_amount} ETB) recorded as pre-verified. Waiting for user session link.")
-        if client:
-            try:
-                client.table("transactions").upsert({
-                    "session_id": "pre_verified",
-                    "amount_expected": final_amount,
-                    "amount_paid": final_amount,
-                    "transaction_ref": final_txn_ref,
-                    "status": "approved",
-                    "payer_name": payer_name,
-                    "raw_webhook_payload": payload.model_dump(by_alias=True)
-                }, on_conflict="transaction_ref").execute()
-            except Exception as e:
-                safe_print(f"[Supabase] Unmatched record notice: {e}")
-
+        safe_print(f"[CBE Webhook] Txn {final_txn_ref} ({final_amount} ETB) registered as pre-verified.")
         return CBEWebhookResponse(
-            status="unmatched_recorded",
-            message=f"Transaction {final_txn_ref} with amount {final_amount} ETB recorded, waiting for user session link.",
+            status="success",
+            message=f"CBE payment {final_txn_ref} pre-verified in registry.",
             transaction_ref=final_txn_ref,
-            amount_detected=final_amount
+            amount_detected=final_amount,
+            matched_session_id=None,
+            download_url=None
         )
 
+    # Validate payment amount
     if final_amount < expected_amount:
-        safe_print(f"[CBE Webhook] ❌ Underpayment for session {matched_session_id}: Expected {expected_amount} ETB, got {final_amount} ETB")
-        if client:
-            try:
-                client.table("transactions").update({
-                    "amount_paid": final_amount,
-                    "status": "failed",
-                    "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
-                }).eq("transaction_ref", final_txn_ref).execute()
-            except Exception:
-                pass
-
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Underpayment detected. Required: {expected_amount} ETB, Received: {final_amount} ETB."
+        safe_print(f"[CBE Webhook] ❌ Underpayment: Expected {expected_amount} ETB, got {final_amount} ETB")
+        return CBEWebhookResponse(
+            status="failed",
+            message=f"Underpayment detected. Expected {expected_amount:.2f} ETB, but received {final_amount:.2f} ETB.",
+            transaction_ref=final_txn_ref,
+            amount_detected=final_amount,
+            matched_session_id=matched_session_id
         )
 
+    # Unlock document and generate signed download URL
     updated_session = storage_service.mark_session_paid(matched_session_id, final_txn_ref)
     download_url = updated_session.get("download_url")
 
@@ -409,6 +421,7 @@ async def check_transaction_status(session_id: str):
     """
     Polling Endpoint for Frontend:
     Checks if payment for this session_id has been approved by the CBE IMAP poller / Webhook.
+    Actively triggers on-demand targeted IMAP check if pending.
     """
     if not SAFE_ID_REGEX.match(session_id):
         raise HTTPException(status_code=400, detail="Invalid session identifier.")
@@ -431,11 +444,29 @@ async def check_transaction_status(session_id: str):
             message="Payment verified! Formatted thesis ready for download."
         )
 
-    # 2. Check local in-memory transactions db
+    submitted_ref = (session.get("transaction_ref") or session.get("tx_ref") or "") if session else ""
+
+    # 2. Check preverified storage
+    if submitted_ref:
+        pre = storage_service.get_preverified_transaction(submitted_ref)
+        if pre:
+            updated = storage_service.mark_session_paid(session_id, submitted_ref)
+            return CheckTransactionStatusResponse(
+                status="approved",
+                session_id=session_id,
+                transaction_ref=submitted_ref,
+                amount_expected=amount_expected,
+                amount_paid=float(pre.get("amount", amount_expected)),
+                verified=True,
+                download_url=updated.get("download_url"),
+                file_name=updated.get("download_filename", "Formatted_Thesis.docx"),
+                message="Payment verified! Formatted thesis ready for download."
+            )
+
+    # 3. Check local in-memory transactions db
     if session_id in _local_transactions_db:
         rec = _local_transactions_db[session_id]
         if rec.get("status") == "approved":
-            # Sync to storage session
             updated = storage_service.mark_session_paid(session_id, rec.get("transaction_ref", "APPROVED"))
             return CheckTransactionStatusResponse(
                 status="approved",
@@ -449,7 +480,7 @@ async def check_transaction_status(session_id: str):
                 message="Payment verified! Formatted thesis ready for download."
             )
 
-    # 3. Check Supabase transactions table
+    # 4. Check Supabase transactions table
     client = storage_service.supabase_client
     if client:
         try:
@@ -473,43 +504,29 @@ async def check_transaction_status(session_id: str):
         except Exception as e:
             safe_print(f"[Supabase Status Check Notice] {e}")
 
-    # 4. If session has a transaction_ref, check if that transaction_ref is approved anywhere
-    if session and (session.get("transaction_ref") or session.get("tx_ref")):
-        submitted_ref = session.get("transaction_ref") or session.get("tx_ref")
-        clean_submitted = re.sub(r'[^A-Z0-9]', '', submitted_ref.upper())
-        if clean_submitted in _local_transactions_db and _local_transactions_db[clean_submitted].get("status") == "approved":
-            updated = storage_service.mark_session_paid(session_id, submitted_ref)
-            return CheckTransactionStatusResponse(
-                status="approved",
-                session_id=session_id,
-                transaction_ref=submitted_ref,
-                amount_expected=amount_expected,
-                amount_paid=amount_expected,
-                verified=True,
-                download_url=updated.get("download_url"),
-                file_name=updated.get("download_filename", "Formatted_Thesis.docx"),
-                message="Payment verified! Formatted thesis ready for download."
-            )
-        if client:
+    # 5. On-demand IMAP scan during polling (cooldown: 4 seconds)
+    if submitted_ref and cbe_imap_service.is_configured():
+        now = time.time()
+        last_check = _last_imap_check_time.get(session_id, 0)
+        if now - last_check >= 4.0:
+            _last_imap_check_time[session_id] = now
             try:
-                res = client.table("transactions").select("*").ilike("transaction_ref", f"%{submitted_ref}%").execute()
-                if res.data and len(res.data) > 0:
-                    rec = res.data[0]
-                    if rec.get("status") == "approved":
-                        updated = storage_service.mark_session_paid(session_id, submitted_ref)
-                        return CheckTransactionStatusResponse(
-                            status="approved",
-                            session_id=session_id,
-                            transaction_ref=submitted_ref,
-                            amount_expected=amount_expected,
-                            amount_paid=amount_expected,
-                            verified=True,
-                            download_url=updated.get("download_url") or rec.get("download_url"),
-                            file_name=updated.get("download_filename", "Formatted_Thesis.docx"),
-                            message="Payment verified! Formatted thesis ready for download."
-                        )
-            except Exception:
-                pass
+                await asyncio.to_thread(cbe_imap_service.check_gmail_receipts, submitted_ref)
+                refreshed = storage_service.get_session(session_id)
+                if refreshed and refreshed.get("is_paid", False):
+                    return CheckTransactionStatusResponse(
+                        status="approved",
+                        session_id=session_id,
+                        transaction_ref=submitted_ref,
+                        amount_expected=amount_expected,
+                        amount_paid=amount_expected,
+                        verified=True,
+                        download_url=refreshed.get("download_url"),
+                        file_name=refreshed.get("download_filename", "Formatted_Thesis.docx"),
+                        message="Payment verified! Formatted thesis ready for download."
+                    )
+            except Exception as e:
+                safe_print(f"[Polling IMAP check notice] {e}")
 
     return CheckTransactionStatusResponse(
         status="pending",
@@ -533,19 +550,11 @@ async def download_formatted_thesis(session_id: str):
         raise HTTPException(status_code=404, detail="Thesis session not found or expired.")
 
     if not session.get("is_paid", False):
-        # Check local and database approvals
         is_approved = False
         if session_id in _local_transactions_db and _local_transactions_db[session_id].get("status") == "approved":
             is_approved = True
-
-        client = storage_service.supabase_client
-        if not is_approved and client:
-            try:
-                res = client.table("transactions").select("status").eq("session_id", session_id).execute()
-                if res.data and res.data[0].get("status") == "approved":
-                    is_approved = True
-            except Exception:
-                pass
+        elif session.get("transaction_ref") and storage_service.get_preverified_transaction(session.get("transaction_ref")):
+            is_approved = True
 
         if not is_approved:
             raise HTTPException(
@@ -555,19 +564,18 @@ async def download_formatted_thesis(session_id: str):
 
     docx_path = session.get("formatted_docx_path")
     if not docx_path or not Path(docx_path).exists():
-        session_dir = storage_service.get_session_dir(session_id)
-        candidate = session_dir / "formatted_thesis.docx"
-        if candidate.exists():
-            docx_path = str(candidate)
+        fallback_p = storage_service.get_session_dir(session_id) / "formatted_thesis.docx"
+        if fallback_p.exists():
+            docx_path = str(fallback_p)
         else:
-            raise HTTPException(status_code=404, detail="Formatted document file not found on disk.")
+            raise HTTPException(status_code=404, detail="Formatted file missing. Please regenerate.")
 
-    original_filename = session.get("original_filename", "Formatted_Thesis.docx")
-    if not original_filename.startswith("Formatted_"):
-        original_filename = f"Formatted_{original_filename}"
+    filename = session.get("download_filename") or session.get("original_filename", "Formatted_Thesis.docx")
+    if not filename.endswith(".docx"):
+        filename = f"{filename}.docx"
 
     return FileResponse(
         path=docx_path,
-        filename=original_filename,
+        filename=filename,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )

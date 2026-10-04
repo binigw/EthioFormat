@@ -12,6 +12,7 @@ class StorageService:
         self.staging_dir = Path(settings.STORAGE_STAGING_DIR)
         self.staging_dir.mkdir(parents=True, exist_ok=True)
         self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._preverified: Dict[str, Dict[str, Any]] = {}
         self.supabase_client = self._init_supabase()
 
     def _init_supabase(self):
@@ -145,8 +146,9 @@ class StorageService:
                 "is_paid": False
             }
 
-        session["transaction_ref"] = transaction_ref.strip().upper()
-        session["tx_ref"] = transaction_ref.strip().upper()
+        clean_ref = transaction_ref.strip().upper()
+        session["transaction_ref"] = clean_ref
+        session["tx_ref"] = clean_ref
         if payer_name:
             session["payer_name"] = payer_name.strip()
         if payer_phone:
@@ -175,6 +177,91 @@ class StorageService:
                 pass
 
         return session
+
+    def register_preverified_transaction(self, txn_ref: str, data: Dict[str, Any]):
+        """
+        Stores receipts parsed from Gmail / Webhooks even before the user submits their transaction ID.
+        Ensures 0-second instant approval when the user submits their FT/TXN number.
+        """
+        if not txn_ref:
+            return
+        clean_ref = re.sub(r'[^A-Z0-9]', '', txn_ref.upper())
+        data["verified_at"] = time.time()
+        data["transaction_ref"] = clean_ref
+        self._preverified[clean_ref] = data
+
+        # 1. Local disk persistence
+        try:
+            pre_file = self.staging_dir / "preverified_txns.json"
+            all_pre = {}
+            if pre_file.exists():
+                try:
+                    with open(pre_file, "r", encoding="utf-8") as f:
+                        all_pre = json.load(f)
+                except Exception:
+                    all_pre = {}
+            all_pre[clean_ref] = data
+            with open(pre_file, "w", encoding="utf-8") as f:
+                json.dump(all_pre, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[StorageService] Failed to save preverified txns: {e}")
+
+        # 2. Supabase Storage cloud sync
+        if self.supabase_client:
+            try:
+                bucket = settings.SUPABASE_BUCKET_NAME
+                self.supabase_client.storage.from_(bucket).upload(
+                    path=f"verified_txns/{clean_ref}.json",
+                    file=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                    file_options={"content-type": "application/json", "upsert": "true"}
+                )
+            except Exception:
+                pass
+
+    def get_preverified_transaction(self, txn_ref: str) -> Optional[Dict[str, Any]]:
+        """
+        Checks if a transaction reference has already been received via Gmail IMAP or Webhooks.
+        """
+        if not txn_ref:
+            return None
+        clean_ref = re.sub(r'[^A-Z0-9]', '', txn_ref.upper())
+
+        # 1. In-memory check
+        if clean_ref in self._preverified:
+            return self._preverified[clean_ref]
+        for k, v in self._preverified.items():
+            if clean_ref == k or clean_ref in k or k in clean_ref:
+                return v
+
+        # 2. Local disk check
+        try:
+            pre_file = self.staging_dir / "preverified_txns.json"
+            if pre_file.exists():
+                with open(pre_file, "r", encoding="utf-8") as f:
+                    all_pre = json.load(f)
+                    if clean_ref in all_pre:
+                        self._preverified[clean_ref] = all_pre[clean_ref]
+                        return all_pre[clean_ref]
+                    for k, v in all_pre.items():
+                        if clean_ref == k or clean_ref in k or k in clean_ref:
+                            self._preverified[k] = v
+                            return v
+        except Exception:
+            pass
+
+        # 3. Supabase Storage check
+        if self.supabase_client:
+            try:
+                bucket = settings.SUPABASE_BUCKET_NAME
+                res = self.supabase_client.storage.from_(bucket).download(f"verified_txns/{clean_ref}.json")
+                if res:
+                    data = json.loads(res.decode("utf-8"))
+                    self._preverified[clean_ref] = data
+                    return data
+            except Exception:
+                pass
+
+        return None
 
     def get_all_sessions(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -238,65 +325,44 @@ class StorageService:
         if not file_name.startswith("Formatted_"):
             file_name = f"Formatted_{file_name}"
 
-        signed_url = None
+        # 1. Internal secure download URL fallback
+        direct_url = f"/api/download/{session_id}"
+        session["download_url"] = direct_url
+        session["download_filename"] = file_name
 
-        # Attempt Supabase Storage Upload & 24h Signed URL generation
+        # 2. Upload to Supabase Storage Bucket & Generate Signed URL (24 Hours)
         if self.supabase_client and formatted_docx and Path(formatted_docx).exists():
             try:
-                bucket = settings.SUPABASE_BUCKET_NAME
-                storage_path = f"theses/{session_id}/{file_name}"
-                with open(formatted_docx, "rb") as f:
-                    file_content = f.read()
-                    self.supabase_client.storage.from_(bucket).upload(
-                        path=storage_path,
-                        file=file_content,
-                        file_options={
-                            "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            "upsert": "true"
-                        }
-                    )
-                # Create a 24-hour signed download URL
-                signed_res = self.supabase_client.storage.from_(bucket).create_signed_url(
-                    storage_path,
-                    expires_in=settings.SIGNED_URL_EXPIRY_HOURS * 3600
+                bucket_name = settings.SUPABASE_BUCKET_NAME
+                cloud_dest_path = f"theses/{session_id}/{file_name}"
+
+                with open(formatted_docx, "rb") as f_in:
+                    file_bytes = f_in.read()
+
+                # Upload to Supabase Storage
+                self.supabase_client.storage.from_(bucket_name).upload(
+                    path=cloud_dest_path,
+                    file=file_bytes,
+                    file_options={"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "upsert": "true"}
                 )
-                if isinstance(signed_res, dict) and "signedURL" in signed_res:
-                    signed_url = signed_res["signedURL"]
-                elif hasattr(signed_res, "signed_url"):
-                    signed_url = signed_res.signed_url
-                print(f"[Supabase] File uploaded successfully to {storage_path}")
+
+                # Generate 24-hour signed download URL
+                expiry_seconds = settings.SIGNED_URL_EXPIRY_HOURS * 3600
+                signed_res = self.supabase_client.storage.from_(bucket_name).create_signed_url(
+                    path=cloud_dest_path,
+                    expires_in=expiry_seconds
+                )
+
+                if signed_res and "signedURL" in signed_res:
+                    session["download_url"] = signed_res["signedURL"]
+                elif signed_res and "signedUrl" in signed_res:
+                    session["download_url"] = signed_res["signedUrl"]
+
             except Exception as e:
-                print(f"[Supabase] Storage notice: {e}")
+                print(f"[Supabase Storage] Notice: {e}. Retaining direct fallback URL.")
 
-        # Local secure download fallback if storage unavailable
-        if not signed_url:
-            signed_url = f"/api/download/{session_id}"
-
-        session["download_url"] = signed_url
-        session["download_filename"] = file_name
-        self._sessions[session_id] = session
-
-        # Persist updated paid state to disk metadata
-        try:
-            session_dir = self.get_session_dir(session_id)
-            meta_path = session_dir / "session_metadata.json"
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(session, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[StorageService] Failed to persist paid session metadata: {e}")
-
-        # Sync to Supabase Storage status.json
-        if self.supabase_client:
-            try:
-                bucket = settings.SUPABASE_BUCKET_NAME
-                self.supabase_client.storage.from_(bucket).upload(
-                    path=f"theses/{session_id}/status.json",
-                    file=json.dumps(session, ensure_ascii=False).encode("utf-8"),
-                    file_options={"content-type": "application/json", "upsert": "true"}
-                )
-            except Exception:
-                pass
-
+        # Update in-memory & disk cache
+        self.register_session(session_id, session)
         return session
 
 storage_service = StorageService()

@@ -69,10 +69,8 @@ class CBEImapService:
             return ""
 
         try:
-            # 1. If already a string, clean invisible marks immediately
             if isinstance(raw_header_val, str):
                 cleaned = cbe_email_parser.clean_raw_content(raw_header_val)
-                # If header looks MIME-encoded (=?utf-8?...), attempt decode_header
                 if "=?" in raw_header_val:
                     try:
                         fragments = decode_header(raw_header_val)
@@ -91,13 +89,11 @@ class CBEImapService:
                         return cleaned
                 return cleaned
 
-            # 2. If bytes, decode with utf-8 fallback
             if isinstance(raw_header_val, bytes):
                 return cbe_email_parser.clean_raw_content(
                     raw_header_val.decode("utf-8", errors="ignore")
                 )
 
-            # 3. If Header registry object from email.policy.default
             return cbe_email_parser.clean_raw_content(str(raw_header_val))
 
         except Exception as e:
@@ -110,7 +106,6 @@ class CBEImapService:
         body_parts = []
 
         try:
-            # Check for modern email message get_body
             if hasattr(msg, "get_body"):
                 try:
                     plain_body = msg.get_body(preferencelist=('plain', 'html'))
@@ -160,17 +155,17 @@ class CBEImapService:
 
         return cbe_email_parser.clean_raw_content("\n".join(body_parts))
 
-    def check_gmail_receipts(self) -> List[Dict[str, Any]]:
+    def check_gmail_receipts(self, target_txn_ref: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Synchronous single-pass IMAP check.
-        Connects to Gmail, scans UNSEEN + recent emails, parses CBE alerts, and updates Supabase & disk metadata.
+        Synchronous single-pass IMAP check with targeted Txn ID search.
+        Connects to Gmail, scans targeted, UNSEEN, and recent emails, parses CBE alerts,
+        and updates Supabase, disk metadata, and pre-verified registry.
         """
         if not self.is_configured():
             now = time.time()
             if now - self._last_log_time > 60:
                 safe_print(
-                    "[CBE IMAP] ⚠️ IMAP Not Configured: GMAIL_IMAP_USER or GMAIL_IMAP_PASSWORD environment variable is empty. "
-                    "Make sure to set GMAIL_IMAP_USER and GMAIL_IMAP_PASSWORD in Render Environment variables."
+                    "[CBE IMAP] ⚠️ IMAP Not Configured: GMAIL_IMAP_USER or GMAIL_IMAP_PASSWORD environment variable is empty."
                 )
                 self._last_log_time = now
             return []
@@ -180,14 +175,26 @@ class CBEImapService:
 
         try:
             # 1. Connect and login via SSL
-            mail = imaplib.IMAP4_SSL(self.server, self.port, timeout=12)
+            mail = imaplib.IMAP4_SSL(self.server, self.port, timeout=15)
             mail.login(self.user, self.password)
             mail.select("INBOX")
 
-            # 2. Gather email IDs to inspect: UNSEEN first, plus last 25 recent messages
             email_ids_to_check = set()
+            clean_target = re.sub(r'[^A-Z0-9]', '', target_txn_ref.upper()) if target_txn_ref else None
 
-            # Search unseen
+            # 2. Targeted search if user provided a transaction ID
+            if clean_target and len(clean_target) >= 4:
+                safe_print(f"[CBE IMAP] Performing targeted IMAP search for Txn ID: '{clean_target}'...")
+                for query in [f'TEXT "{clean_target}"', f'BODY "{clean_target}"', f'SUBJECT "{clean_target}"']:
+                    try:
+                        status_t, resp_t = mail.search(None, query)
+                        if status_t == "OK" and resp_t and resp_t[0]:
+                            for eid in resp_t[0].split():
+                                email_ids_to_check.add(eid)
+                    except Exception:
+                        pass
+
+            # 3. Search UNSEEN
             try:
                 status_unseen, resp_unseen = mail.search(None, "UNSEEN")
                 if status_unseen == "OK" and resp_unseen and resp_unseen[0]:
@@ -196,12 +203,12 @@ class CBEImapService:
             except Exception as e_search:
                 safe_print(f"[CBE IMAP] Notice in search UNSEEN: {e_search}")
 
-            # Search ALL to capture recent seen emails (last 25)
+            # 4. Search ALL to capture last 50 recent messages
             try:
                 status_all, resp_all = mail.search(None, "ALL")
                 if status_all == "OK" and resp_all and resp_all[0]:
                     all_ids = resp_all[0].split()
-                    for eid in all_ids[-25:]:
+                    for eid in all_ids[-50:]:
                         email_ids_to_check.add(eid)
             except Exception as e_all:
                 safe_print(f"[CBE IMAP] Notice in search ALL: {e_all}")
@@ -223,11 +230,17 @@ class CBEImapService:
                     return 0
 
             sorted_eids = sorted(list(email_ids_to_check), key=_get_id_num, reverse=True)
-            safe_print(f"[CBE IMAP] Checking {len(sorted_eids)} recent email(s) in inbox for CBE receipts...")
+            safe_print(f"[CBE IMAP] Checking {len(sorted_eids)} email(s) in inbox (Target: {clean_target or 'All'})...")
+
+            # Broad Ethiopian payment keywords
+            cbe_keywords = [
+                "cbe", "birr", "ebirr", "coopay", "transfer", "transferred", "txn", "ref", "ft",
+                "credit", "credited", "etb", "biniam", "1000659424936", "4936", "bank", "sms",
+                "alert", "deposited", "deposit", "payment", "receipt", "የግብይት", "ባንክ", "ብር", "መለያ", "ሒሳብ"
+            ]
 
             for e_id in sorted_eids:
                 try:
-                    # Clean e_id for IMAP protocol
                     clean_eid = e_id if isinstance(e_id, bytes) else str(e_id).encode("ascii")
                     res_code, msg_data = mail.fetch(clean_eid, "(RFC822)")
                     if res_code != "OK" or not msg_data or not msg_data[0]:
@@ -237,7 +250,6 @@ class CBEImapService:
                     if not isinstance(raw_email, bytes):
                         continue
 
-                    # Parse using modern policy for robust header extraction
                     try:
                         msg = email.message_from_bytes(raw_email, policy=email.policy.default)
                     except Exception:
@@ -247,30 +259,52 @@ class CBEImapService:
                     sender = self._decode_header_safely(msg.get("From", ""))
                     body = self._extract_body_safely(msg)
 
-                    # Quick pre-filter: check if email contains CBE / banking keywords
-                    combined_check = f"{subject} {sender} {body[:500]}".lower()
-                    cbe_keywords = ["cbe", "commercial bank", "birr", "ft2", "txn", "credited", "deposited", "የግብይት", "ባንክ"]
-                    if not any(kw in combined_check for kw in cbe_keywords):
+                    combined_check = f"{subject} {sender} {body}".lower()
+
+                    # Check if matches target or payment keywords
+                    is_targeted_match = clean_target and (clean_target.lower() in combined_check)
+                    has_payment_keywords = any(kw in combined_check for kw in cbe_keywords)
+
+                    if not is_targeted_match and not has_payment_keywords:
                         continue
 
                     eid_str = clean_eid.decode("ascii", errors="ignore")
-                    safe_print(f"[CBE IMAP] Scanning relevant email #{eid_str}: Subject='{subject}' | From='{sender}'")
+                    safe_print(f"[CBE IMAP] Processing email #{eid_str}: Subject='{subject}' | From='{sender}'")
 
-                    # Parse with regex parser
                     parsed = cbe_email_parser.parse_full_cbe_payload(raw_text=body, subject=subject)
                     txn_ref = parsed.get("transaction_ref")
                     amount = parsed.get("amount")
                     payer_name = parsed.get("payer_name")
 
-                    safe_print(f"[CBE IMAP] Extracted metadata from email -> Txn ID: '{txn_ref}', Amount: {amount} ETB, Payer: '{payer_name}'")
+                    # If targeted and regex missed it, try direct search
+                    if not txn_ref and clean_target and clean_target.lower() in combined_check:
+                        txn_ref = clean_target
 
-                    if txn_ref and amount and amount > 0:
+                    safe_print(f"[CBE IMAP] Extracted -> Txn ID: '{txn_ref}', Amount: {amount} ETB, Payer: '{payer_name}'")
+
+                    if txn_ref:
                         txn_ref_upper = txn_ref.strip().upper()
+                        # Default amount to 50 if parser couldn't find explicit amount but found Txn ID
+                        parsed_amount = amount if (amount and amount > 0) else 50.0
 
-                        # Match with pending session in Supabase / memory / disk
+                        # Register in preverified storage regardless of matching
+                        storage_service.register_preverified_transaction(
+                            txn_ref=txn_ref_upper,
+                            data={
+                                "transaction_ref": txn_ref_upper,
+                                "amount": parsed_amount,
+                                "payer_name": payer_name,
+                                "source": "gmail_imap",
+                                "email_id": eid_str,
+                                "subject": subject,
+                                "from": sender
+                            }
+                        )
+
+                        # Match with active pending session
                         approved = self._process_verified_txn(
                             txn_ref=txn_ref_upper,
-                            amount=amount,
+                            amount=parsed_amount,
                             payer_name=payer_name,
                             raw_email={"subject": subject, "from": sender, "body": body[:500]}
                         )
@@ -278,10 +312,9 @@ class CBEImapService:
                         if approved:
                             verified_transactions.append({
                                 "transaction_ref": txn_ref_upper,
-                                "amount": amount,
+                                "amount": parsed_amount,
                                 "status": "approved"
                             })
-                            # Mark email as read in Gmail
                             try:
                                 mail.store(clean_eid, "+FLAGS", "\\Seen")
                             except Exception:
@@ -321,7 +354,7 @@ class CBEImapService:
         4. Pricing amount match fallback
         """
         clean_ref = re.sub(r'[^A-Z0-9]', '', txn_ref.upper())
-        safe_print(f"[CBE IMAP] Attempting to match Txn '{txn_ref}' (Normalized: '{clean_ref}', Amount: {amount} ETB)...")
+        safe_print(f"[CBE IMAP] Matching Txn '{txn_ref}' (Normalized: '{clean_ref}', Amount: {amount} ETB)...")
 
         client = storage_service.supabase_client
         matched_session_id: Optional[str] = None
@@ -366,25 +399,7 @@ class CBEImapService:
                 safe_print(f"[CBE IMAP] Matched via single pending pricing amount match -> Session: {matched_session_id}")
 
         if not matched_session_id:
-            safe_print(f"[CBE IMAP] Txn '{clean_ref}' ({amount} ETB) parsed from email, but no pending session matched yet. Storing in Supabase registry.")
-            # Record in Supabase as pre-verified so when the user submits their Txn ID later, it verifies immediately
-            if client:
-                try:
-                    client.table("transactions").upsert({
-                        "session_id": "pre_verified",
-                        "amount_expected": amount,
-                        "amount_paid": amount,
-                        "transaction_ref": clean_ref,
-                        "status": "approved",
-                        "payer_name": payer_name,
-                        "raw_webhook_payload": raw_email
-                    }, on_conflict="transaction_ref").execute()
-                except Exception as e:
-                    safe_print(f"[CBE IMAP Supabase Record] Notice: {e}")
-            return False
-
-        if amount < expected_amount:
-            safe_print(f"[CBE IMAP] ❌ Underpayment for session {matched_session_id}: Expected {expected_amount} ETB, got {amount} ETB")
+            safe_print(f"[CBE IMAP] Txn '{clean_ref}' ({amount} ETB) pre-verified and saved for future submission.")
             return False
 
         # Mark paid & generate 24h Supabase Signed URL
@@ -407,7 +422,7 @@ class CBEImapService:
         safe_print(f"[CBE IMAP] ✅ SUCCESS! Formatted thesis unlocked for session {matched_session_id} (Txn: {clean_ref}, Download: {download_url})")
         return True
 
-    async def start_background_loop(self, poll_interval: int = 20):
+    async def start_background_loop(self, poll_interval: int = 15):
         """
         Asynchronous periodic background worker loop for FastAPI lifespan.
         """
@@ -421,20 +436,15 @@ class CBEImapService:
         while self._is_running:
             try:
                 if self.is_configured():
-                    # Run synchronous imap check in thread pool so it doesn't block async event loop
                     await asyncio.to_thread(self.check_gmail_receipts)
                 else:
                     now = time.time()
                     if now - self._last_log_time > 120:
-                        safe_print(f"[CBE IMAP Background Worker] Idle: Gmail IMAP not configured. Waiting for GMAIL_IMAP_USER/GMAIL_IMAP_PASSWORD or Webhooks.")
+                        safe_print(f"[CBE IMAP Background Worker] Idle: Waiting for GMAIL_IMAP_USER/GMAIL_IMAP_PASSWORD or Webhooks.")
                         self._last_log_time = now
             except Exception as e:
-                safe_print(f"[CBE IMAP Background Loop Error] {e}")
+                safe_print(f"[CBE IMAP Loop Exception] {e}")
 
             await asyncio.sleep(poll_interval)
-
-    def stop_background_loop(self):
-        self._is_running = False
-        safe_print("[CBE IMAP Background Worker] Stopped.")
 
 cbe_imap_service = CBEImapService()
