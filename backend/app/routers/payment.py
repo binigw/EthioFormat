@@ -301,21 +301,26 @@ async def cbe_email_webhook(
             amount_detected=None
         )
 
+    all_extracted_refs = parsed_meta.get("all_transaction_refs", [])
+    if extracted_txn and extracted_txn not in all_extracted_refs:
+        all_extracted_refs.append(extracted_txn)
+
     final_txn_ref = extracted_txn.strip().upper() if extracted_txn else f"TXN-UNKWN-{int(time.time())}"
     final_amount = float(extracted_amount) if extracted_amount else 50.0
 
-    # Store in preverified cache
-    storage_service.register_preverified_transaction(
-        txn_ref=final_txn_ref,
-        data={
-            "transaction_ref": final_txn_ref,
-            "amount": final_amount,
-            "payer_name": payer_name,
-            "source": "webhook",
-            "subject": payload.subject,
-            "body": raw_content[:400]
-        }
-    )
+    # Store all references in preverified cache
+    for ref_cand in all_extracted_refs:
+        storage_service.register_preverified_transaction(
+            txn_ref=ref_cand.strip().upper(),
+            data={
+                "transaction_ref": ref_cand.strip().upper(),
+                "amount": final_amount,
+                "payer_name": payer_name,
+                "source": "webhook",
+                "subject": payload.subject,
+                "body": raw_content[:400]
+            }
+        )
 
     client = storage_service.supabase_client
     matched_session_id: Optional[str] = None
@@ -324,12 +329,15 @@ async def cbe_email_webhook(
     # Step 1: Query Supabase transactions table by transaction_ref
     if client:
         try:
-            res = client.table("transactions").select("*").ilike("transaction_ref", f"%{final_txn_ref}%").execute()
-            if res.data and len(res.data) > 0:
-                matched_row = res.data[0]
-                matched_session_id = matched_row.get("session_id")
-                expected_amount = float(matched_row.get("amount_expected", 50.0))
-                safe_print(f"[CBE Webhook] Matched session in Supabase: {matched_session_id}")
+            for ref_cand in all_extracted_refs:
+                res = client.table("transactions").select("*").ilike("transaction_ref", f"%{ref_cand.strip().upper()}%").execute()
+                if res.data and len(res.data) > 0:
+                    matched_row = res.data[0]
+                    matched_session_id = matched_row.get("session_id")
+                    expected_amount = float(matched_row.get("amount_expected", 50.0))
+                    final_txn_ref = ref_cand.strip().upper()
+                    safe_print(f"[CBE Webhook] Matched session in Supabase with ref '{final_txn_ref}': {matched_session_id}")
+                    break
         except Exception as e:
             safe_print(f"[Supabase Webhook Search] Notice: {e}")
 

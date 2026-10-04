@@ -273,25 +273,27 @@ class CBEImapService:
 
                     parsed = cbe_email_parser.parse_full_cbe_payload(raw_text=body, subject=subject)
                     txn_ref = parsed.get("transaction_ref")
+                    all_refs = parsed.get("all_transaction_refs", [])
                     amount = parsed.get("amount")
                     payer_name = parsed.get("payer_name")
 
                     # If targeted and regex missed it, try direct search
-                    if not txn_ref and clean_target and clean_target.lower() in combined_check:
-                        txn_ref = clean_target
+                    if clean_target and clean_target.lower() in combined_check:
+                        if clean_target.upper() not in all_refs:
+                            all_refs.append(clean_target.upper())
+                        if not txn_ref:
+                            txn_ref = clean_target
 
-                    safe_print(f"[CBE IMAP] Extracted -> Txn ID: '{txn_ref}', Amount: {amount} ETB, Payer: '{payer_name}'")
+                    safe_print(f"[CBE IMAP] Extracted -> Txn ID: '{txn_ref}', All Refs: {all_refs}, Amount: {amount} ETB, Payer: '{payer_name}'")
 
-                    if txn_ref:
-                        txn_ref_upper = txn_ref.strip().upper()
-                        # Default amount to 50 if parser couldn't find explicit amount but found Txn ID
-                        parsed_amount = amount if (amount and amount > 0) else 50.0
+                    parsed_amount = amount if (amount and amount > 0) else 50.0
 
-                        # Register in preverified storage regardless of matching
+                    for ref_item in all_refs:
+                        ref_item_upper = ref_item.strip().upper()
                         storage_service.register_preverified_transaction(
-                            txn_ref=txn_ref_upper,
+                            txn_ref=ref_item_upper,
                             data={
-                                "transaction_ref": txn_ref_upper,
+                                "transaction_ref": ref_item_upper,
                                 "amount": parsed_amount,
                                 "payer_name": payer_name,
                                 "source": "gmail_imap",
@@ -301,9 +303,8 @@ class CBEImapService:
                             }
                         )
 
-                        # Match with active pending session
                         approved = self._process_verified_txn(
-                            txn_ref=txn_ref_upper,
+                            txn_ref=ref_item_upper,
                             amount=parsed_amount,
                             payer_name=payer_name,
                             raw_email={"subject": subject, "from": sender, "body": body[:500]}
@@ -311,7 +312,7 @@ class CBEImapService:
 
                         if approved:
                             verified_transactions.append({
-                                "transaction_ref": txn_ref_upper,
+                                "transaction_ref": ref_item_upper,
                                 "amount": parsed_amount,
                                 "status": "approved"
                             })

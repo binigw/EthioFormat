@@ -42,12 +42,9 @@ class CBEEmailParserService:
         re.compile(r'\b(TXN[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
         re.compile(r'\b(CBE[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
         re.compile(r'\b(TT[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
-        # COOPay-EBIRR & EBIRR Transfer SMS (e.g., "[-EBIRR-COOPay-] Transfer ID: 2799024023")
-        re.compile(r'\[-?EBIRR-COOPay-?\]\s*(?:Transfer\s*ID|Txn|Ref)?\s*[:=\-]?\s*([0-9A-Za-z]{6,24})', re.IGNORECASE),
-        re.compile(r'(?:COOPay|EBIRR|COOPayEBIRR)\s*(?:Transfer\s*ID|Txn|Ref|ID)?\s*[:=\-]?\s*([0-9A-Za-z]{6,24})', re.IGNORECASE),
         # Explicit "Transfer ID: ..." / "Transaction ID: ..." / "Txn ID: ..." / "Ref: ..."
         re.compile(
-            r'\b(?:Transfer|Transaction|Txn|Ref(?:erence)?|Receipt|FT|TT|Code|የግብይት\s*ቁጥር|የማጣቀሻ\s*ቁጥር|የትራንዛክሽን\s*ቁጥር|መለያ\s*ቁጥር)(?:\s*(?:ID|Ref|Reference|Number|No\.?|Code))?\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})\b',
+            r'\b(?:Transfer\s*ID|Txn\s*ID|Transaction\s*ID|Ref(?:erence)?(?:\s*No\.?|\s*Number|\s*ID)?|Receipt\s*No\.?|FT\s*No\.?|TT\s*No\.?|Code|የግብይት\s*ቁጥር|የማጣቀሻ\s*ቁጥር|የትራንዛክሽን\s*ቁጥር|መለያ\s*ቁጥር)\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})\b',
             re.IGNORECASE
         ),
         # Sentence structures: "transfer with reference ...", "deposited with ref ...", "transferred with ID ..."
@@ -55,10 +52,17 @@ class CBEEmailParserService:
             r'(?:transfer(?:red)?|deposit(?:ed)?|credit(?:ed)?|paid)\s+(?:with\s+)?(?:reference|ref|id|txn|code)\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})',
             re.IGNORECASE
         ),
-        # CBEBirr / Telebirr 10-18 numeric transaction IDs following keyword or starting with 2
+        # COOPay-EBIRR & EBIRR Transfer SMS (e.g., "[-EBIRR-COOPay-] ... Transfer ID: 2799024023")
+        re.compile(
+            r'(?:COOPay[-_ ]?EBIRR|EBIRR[-_ ]?COOPay|COOPay|EBIRR|E[-_]BIRR)\s+(?:Transfer|Txn|Ref|Payment)?\s*(?:ID|No\.?|Ref)?\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})',
+            re.IGNORECASE
+        ),
+        # CBEBirr / Telebirr 8-18 numeric transaction IDs following keyword or starting with 2
         re.compile(r'(?:CBEBirr\s*(?:Txn|Ref|ID|Transaction)|Birr\s*Ref)\s*[:=\-]?\s*([0-9]{8,18})', re.IGNORECASE),
         # Standalone 10-digit numeric transaction IDs (e.g. 2799024023, 2798853639)
         re.compile(r'\b(2[0-9]{9,15})\b', re.IGNORECASE),
+        # General 9-16 digit transaction references (excluding account numbers)
+        re.compile(r'\b([0-9]{9,16})\b', re.IGNORECASE)
     ]
 
     # 2. Patterns for Payment Amount in ETB / Birr
@@ -100,7 +104,10 @@ class CBEEmailParserService:
     IGNORED_WORDS = {
         "NOTIFICATION", "CONFIRMATION", "TRANSACTION", "SUCCESS",
         "FAILED", "PENDING", "DEPOSIT", "CREDIT", "PAYMENT", "ACCOUNT",
-        "ETHIOFORMAT", "BANKING", "COMMERCIAL", "ETHIOPIA", "CUSTOMER"
+        "ETHIOFORMAT", "BANKING", "COMMERCIAL", "ETHIOPIA", "CUSTOMER",
+        "COOPAY", "EBIRR", "COOPAYEBIRR", "TRANSFER", "TELEBIRR",
+        "BIRR", "ETB", "DEBIT", "TRANSFERID", "TXNID", "1000659424936",
+        "OROMIA", "SAVING", "CURRENT", "MOBILE"
     }
 
     @classmethod
@@ -154,15 +161,17 @@ class CBEEmailParserService:
 
         # 1. Extract Transaction ID
         extracted_txn: Optional[str] = None
+        all_txns: List[str] = []
         for pattern in cls.TXN_PATTERNS:
             for match in pattern.finditer(combined_text):
                 candidate = match.group(1).strip()
                 clean_candidate = re.sub(r'[^A-Za-z0-9_-]', '', candidate)
                 if len(clean_candidate) >= 5 and clean_candidate.upper() not in cls.IGNORED_WORDS:
-                    extracted_txn = clean_candidate.upper()
-                    break
-            if extracted_txn:
-                break
+                    val_upper = clean_candidate.upper()
+                    if val_upper not in all_txns:
+                        all_txns.append(val_upper)
+                    if not extracted_txn:
+                        extracted_txn = val_upper
 
         # 2. Extract Amount
         extracted_amount: Optional[float] = None
@@ -207,6 +216,7 @@ class CBEEmailParserService:
 
         return {
             "transaction_ref": extracted_txn,
+            "all_transaction_refs": all_txns,
             "amount": extracted_amount,
             "payer_name": extracted_payer,
             "account_number": extracted_acc,
