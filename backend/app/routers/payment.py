@@ -278,165 +278,175 @@ async def cbe_email_webhook(
     4. Validates amount_paid >= amount_expected.
     5. Updates status to 'approved' and generates 24-hour Supabase Signed Download URL.
     """
-    raw_content = payload.body or payload.html or payload.text or payload.raw_content or payload.message or ""
-    safe_print(f"[CBE Webhook] Received webhook call! Subject='{payload.subject}', Payload Size={len(raw_content)} chars")
+    try:
+        raw_content = payload.body or payload.html or payload.text or payload.raw_content or payload.message or ""
+        safe_print(f"[CBE Webhook] Received webhook call! Subject='{payload.subject}', Payload Size={len(raw_content)} chars")
 
-    parsed_meta = cbe_email_parser.parse_full_cbe_payload(
-        raw_text=raw_content,
-        subject=payload.subject
-    )
-
-    extracted_txn = parsed_meta.get("transaction_ref") or payload.transaction_id
-    extracted_amount = parsed_meta.get("amount") or payload.amount
-    payer_name = parsed_meta.get("payer_name") or payload.payer_name or payload.sender or payload.from_email
-
-    safe_print(f"[CBE Webhook] Parsed: Txn='{extracted_txn}', Amount={extracted_amount} ETB, Payer='{payer_name}'")
-
-    if not extracted_txn and not extracted_amount:
-        safe_print("[CBE Webhook] ⚠️ Could not extract Transaction ID or Amount from webhook payload.")
-        return CBEWebhookResponse(
-            status="ignored",
-            message="No CBE transaction reference or amount detected in payload.",
-            transaction_ref=None,
-            amount_detected=None
+        parsed_meta = cbe_email_parser.parse_full_cbe_payload(
+            raw_text=raw_content,
+            subject=payload.subject
         )
 
-    all_extracted_refs = parsed_meta.get("all_transaction_refs", [])
-    if extracted_txn and extracted_txn not in all_extracted_refs:
-        all_extracted_refs.append(extracted_txn)
+        extracted_txn = parsed_meta.get("transaction_ref") or payload.transaction_id
+        extracted_amount = parsed_meta.get("amount") or payload.amount
+        payer_name = parsed_meta.get("payer_name") or getattr(payload, "payer_name", None) or getattr(payload, "sender", None) or getattr(payload, "from_email", None)
 
-    final_txn_ref = extracted_txn.strip().upper() if extracted_txn else f"TXN-UNKWN-{int(time.time())}"
-    final_amount = float(extracted_amount) if extracted_amount else 50.0
+        safe_print(f"[CBE Webhook] Parsed: Txn='{extracted_txn}', Amount={extracted_amount} ETB, Payer='{payer_name}'")
 
-    # Store all references in preverified cache
-    for ref_cand in all_extracted_refs:
-        storage_service.register_preverified_transaction(
-            txn_ref=ref_cand.strip().upper(),
-            data={
-                "transaction_ref": ref_cand.strip().upper(),
-                "amount": final_amount,
-                "payer_name": payer_name,
-                "source": "webhook",
-                "subject": payload.subject,
-                "body": raw_content[:400]
-            }
-        )
+        if not extracted_txn and not extracted_amount:
+            safe_print("[CBE Webhook] ⚠️ Could not extract Transaction ID or Amount from webhook payload.")
+            return CBEWebhookResponse(
+                status="ignored",
+                message="No CBE transaction reference or amount detected in payload.",
+                transaction_ref=None,
+                amount_detected=None
+            )
 
-    client = storage_service.supabase_client
-    matched_session_id: Optional[str] = None
-    expected_amount: float = 50.0
+        all_extracted_refs = parsed_meta.get("all_transaction_refs", [])
+        if extracted_txn and extracted_txn not in all_extracted_refs:
+            all_extracted_refs.append(extracted_txn)
 
-    # Step 1: Query Supabase transactions table by transaction_ref
-    if client:
-        try:
-            for ref_cand in all_extracted_refs:
-                res = client.table("transactions").select("*").ilike("transaction_ref", f"%{ref_cand.strip().upper()}%").execute()
-                if res.data and len(res.data) > 0:
-                    matched_row = res.data[0]
-                    matched_session_id = matched_row.get("session_id")
-                    expected_amount = float(matched_row.get("amount_expected", 50.0))
-                    final_txn_ref = ref_cand.strip().upper()
-                    safe_print(f"[CBE Webhook] Matched session in Supabase with ref '{final_txn_ref}': {matched_session_id}")
+        final_txn_ref = extracted_txn.strip().upper() if extracted_txn else f"TXN-UNKWN-{int(time.time())}"
+        final_amount = float(extracted_amount) if extracted_amount else 50.0
+
+        # Store all references in preverified cache
+        for ref_cand in all_extracted_refs:
+            storage_service.register_preverified_transaction(
+                txn_ref=ref_cand.strip().upper(),
+                data={
+                    "transaction_ref": ref_cand.strip().upper(),
+                    "amount": final_amount,
+                    "payer_name": payer_name,
+                    "source": "webhook",
+                    "subject": payload.subject,
+                    "body": raw_content[:400]
+                }
+            )
+
+        client = storage_service.supabase_client
+        matched_session_id: Optional[str] = None
+        expected_amount: float = 50.0
+
+        # Step 1: Query Supabase transactions table by transaction_ref
+        if client:
+            try:
+                for ref_cand in all_extracted_refs:
+                    res = client.table("transactions").select("*").ilike("transaction_ref", f"%{ref_cand.strip().upper()}%").execute()
+                    if res.data and len(res.data) > 0:
+                        matched_row = res.data[0]
+                        matched_session_id = matched_row.get("session_id")
+                        expected_amount = float(matched_row.get("amount_expected", 50.0))
+                        final_txn_ref = ref_cand.strip().upper()
+                        safe_print(f"[CBE Webhook] Matched session in Supabase with ref '{final_txn_ref}': {matched_session_id}")
+                        break
+            except Exception as e:
+                safe_print(f"[Supabase Webhook Search] Notice: {e}")
+
+        # Step 2: Check Local Disk & Memory Sessions
+        if not matched_session_id:
+            matched_sid = storage_service.find_session_by_txn_ref(final_txn_ref)
+            if matched_sid:
+                matched_session_id = matched_sid
+                sess = storage_service.get_session(matched_sid)
+                pricing = sess.get("pricing", {}) if sess else {}
+                expected_amount = float(pricing.get("total_fee", 50.0))
+                safe_print(f"[CBE Webhook] Matched session via disk/memory find_session_by_txn_ref: {matched_session_id}")
+
+        # Step 3: Check in-memory transactions db
+        if not matched_session_id:
+            for sid, rec in _local_transactions_db.items():
+                cand = rec.get("transaction_ref", "")
+                if cand and (final_txn_ref in cand.upper() or cand.upper() in final_txn_ref):
+                    matched_session_id = rec.get("session_id")
+                    expected_amount = float(rec.get("amount_expected", 50.0))
+                    safe_print(f"[CBE Webhook] Matched session via _local_transactions_db: {matched_session_id}")
                     break
-        except Exception as e:
-            safe_print(f"[Supabase Webhook Search] Notice: {e}")
 
-    # Step 2: Check Local Disk & Memory Sessions
-    if not matched_session_id:
-        matched_sid = storage_service.find_session_by_txn_ref(final_txn_ref)
-        if matched_sid:
-            matched_session_id = matched_sid
-            sess = storage_service.get_session(matched_sid)
-            pricing = sess.get("pricing", {}) if sess else {}
-            expected_amount = float(pricing.get("total_fee", 50.0))
-            safe_print(f"[CBE Webhook] Matched session via disk/memory find_session_by_txn_ref: {matched_session_id}")
+        # Step 4: Fallback - Match single active unpaid session by amount
+        if not matched_session_id:
+            all_sessions = storage_service.get_all_sessions()
+            unpaid = []
+            for sid, sdata in all_sessions.items():
+                if not sdata.get("is_paid", False):
+                    pricing = sdata.get("pricing", {})
+                    req_fee = float(pricing.get("total_fee", 50.0))
+                    if abs(req_fee - final_amount) < 0.01:
+                        unpaid.append((sid, req_fee))
 
-    # Step 3: Check in-memory transactions db
-    if not matched_session_id:
-        for sid, rec in _local_transactions_db.items():
-            cand = rec.get("transaction_ref", "")
-            if cand and (final_txn_ref in cand.upper() or cand.upper() in final_txn_ref):
-                matched_session_id = rec.get("session_id")
-                expected_amount = float(rec.get("amount_expected", 50.0))
-                safe_print(f"[CBE Webhook] Matched session via _local_transactions_db: {matched_session_id}")
-                break
+            if len(unpaid) == 1:
+                matched_session_id = unpaid[0][0]
+                expected_amount = unpaid[0][1]
+                safe_print(f"[CBE Webhook] Matched single pending session by price ({final_amount} ETB): {matched_session_id}")
 
-    # Step 4: Fallback - Match single active unpaid session by amount
-    if not matched_session_id:
-        all_sessions = storage_service.get_all_sessions()
-        unpaid = []
-        for sid, sdata in all_sessions.items():
-            if not sdata.get("is_paid", False):
-                pricing = sdata.get("pricing", {})
-                req_fee = float(pricing.get("total_fee", 50.0))
-                if abs(req_fee - final_amount) < 0.01:
-                    unpaid.append((sid, req_fee))
+        if not matched_session_id:
+            safe_print(f"[CBE Webhook] Txn {final_txn_ref} ({final_amount} ETB) registered as pre-verified.")
+            return CBEWebhookResponse(
+                status="success",
+                message=f"CBE payment {final_txn_ref} pre-verified in registry.",
+                transaction_ref=final_txn_ref,
+                amount_detected=final_amount,
+                matched_session_id=None,
+                download_url=None
+            )
 
-        if len(unpaid) == 1:
-            matched_session_id = unpaid[0][0]
-            expected_amount = unpaid[0][1]
-            safe_print(f"[CBE Webhook] Matched single pending session by price ({final_amount} ETB): {matched_session_id}")
+        # Validate payment amount
+        if final_amount < expected_amount:
+            safe_print(f"[CBE Webhook] ❌ Underpayment: Expected {expected_amount} ETB, got {final_amount} ETB")
+            return CBEWebhookResponse(
+                status="failed",
+                message=f"Underpayment detected. Expected {expected_amount:.2f} ETB, but received {final_amount:.2f} ETB.",
+                transaction_ref=final_txn_ref,
+                amount_detected=final_amount,
+                matched_session_id=matched_session_id
+            )
 
-    if not matched_session_id:
-        safe_print(f"[CBE Webhook] Txn {final_txn_ref} ({final_amount} ETB) registered as pre-verified.")
+        # Unlock document and generate signed download URL
+        updated_session = storage_service.mark_session_paid(matched_session_id, final_txn_ref)
+        download_url = updated_session.get("download_url")
+
+        if client:
+            try:
+                client.table("transactions").update({
+                    "amount_paid": final_amount,
+                    "status": "approved",
+                    "download_url": download_url,
+                    "payer_name": payer_name,
+                    "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "raw_webhook_payload": payload.model_dump(by_alias=True)
+                }).eq("session_id", matched_session_id).execute()
+            except Exception as e:
+                safe_print(f"[Supabase Webhook Update] Notice: {e}")
+
+        _local_transactions_db[final_txn_ref] = {
+            "session_id": matched_session_id,
+            "amount_expected": expected_amount,
+            "amount_paid": final_amount,
+            "transaction_ref": final_txn_ref,
+            "status": "approved",
+            "download_url": download_url,
+            "payer_name": payer_name
+        }
+        _local_transactions_db[matched_session_id] = _local_transactions_db[final_txn_ref]
+
+        safe_print(f"[CBE Webhook] ✅ SUCCESS! Session {matched_session_id} unlocked with Txn {final_txn_ref} (Download: {download_url})")
+
         return CBEWebhookResponse(
             status="success",
-            message=f"CBE payment {final_txn_ref} pre-verified in registry.",
+            message="CBE Payment confirmed and verified successfully! Formatted thesis unlocked.",
             transaction_ref=final_txn_ref,
             amount_detected=final_amount,
-            matched_session_id=None,
-            download_url=None
+            matched_session_id=matched_session_id,
+            download_url=download_url
         )
 
-    # Validate payment amount
-    if final_amount < expected_amount:
-        safe_print(f"[CBE Webhook] ❌ Underpayment: Expected {expected_amount} ETB, got {final_amount} ETB")
+    except Exception as ex:
+        safe_print(f"[CBE Webhook Exception] {ex}")
         return CBEWebhookResponse(
-            status="failed",
-            message=f"Underpayment detected. Expected {expected_amount:.2f} ETB, but received {final_amount:.2f} ETB.",
-            transaction_ref=final_txn_ref,
-            amount_detected=final_amount,
-            matched_session_id=matched_session_id
+            status="error",
+            message=f"Error processing webhook: {str(ex)}",
+            transaction_ref=payload.transaction_id,
+            amount_detected=payload.amount
         )
-
-    # Unlock document and generate signed download URL
-    updated_session = storage_service.mark_session_paid(matched_session_id, final_txn_ref)
-    download_url = updated_session.get("download_url")
-
-    if client:
-        try:
-            client.table("transactions").update({
-                "amount_paid": final_amount,
-                "status": "approved",
-                "download_url": download_url,
-                "payer_name": payer_name,
-                "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "raw_webhook_payload": payload.model_dump(by_alias=True)
-            }).eq("session_id", matched_session_id).execute()
-        except Exception as e:
-            safe_print(f"[Supabase Webhook Update] Notice: {e}")
-
-    _local_transactions_db[final_txn_ref] = {
-        "session_id": matched_session_id,
-        "amount_expected": expected_amount,
-        "amount_paid": final_amount,
-        "transaction_ref": final_txn_ref,
-        "status": "approved",
-        "download_url": download_url,
-        "payer_name": payer_name
-    }
-    _local_transactions_db[matched_session_id] = _local_transactions_db[final_txn_ref]
-
-    safe_print(f"[CBE Webhook] ✅ SUCCESS! Session {matched_session_id} unlocked with Txn {final_txn_ref} (Download: {download_url})")
-
-    return CBEWebhookResponse(
-        status="success",
-        message="CBE Payment confirmed and verified successfully! Formatted thesis unlocked.",
-        transaction_ref=final_txn_ref,
-        amount_detected=final_amount,
-        matched_session_id=matched_session_id,
-        download_url=download_url
-    )
 
 @router.get("/payment/status/{session_id}", response_model=CheckTransactionStatusResponse)
 @router.get("/cbe-transaction-status/{session_id}", response_model=CheckTransactionStatusResponse)
