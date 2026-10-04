@@ -57,6 +57,15 @@ class StorageService:
                     file=json.dumps(data, ensure_ascii=False).encode("utf-8"),
                     file_options={"content-type": "application/json", "upsert": "true"}
                 )
+
+                formatted_docx = data.get("formatted_docx_path")
+                if formatted_docx and Path(formatted_docx).exists():
+                    with open(formatted_docx, "rb") as f_in:
+                        self.supabase_client.storage.from_(bucket).upload(
+                            path=f"theses/{session_id}/formatted_thesis.docx",
+                            file=f_in.read(),
+                            file_options={"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "upsert": "true"}
+                        )
             except Exception:
                 pass
 
@@ -336,20 +345,29 @@ class StorageService:
         session["download_filename"] = file_name
 
         # 2. Upload to Supabase Storage Bucket & Generate Signed URL (24 Hours)
-        if self.supabase_client and formatted_docx and Path(formatted_docx).exists():
+        if self.supabase_client:
             try:
                 bucket_name = settings.SUPABASE_BUCKET_NAME
                 cloud_dest_path = f"theses/{session_id}/{file_name}"
 
-                with open(formatted_docx, "rb") as f_in:
-                    file_bytes = f_in.read()
+                file_bytes = None
+                if formatted_docx and Path(formatted_docx).exists():
+                    with open(formatted_docx, "rb") as f_in:
+                        file_bytes = f_in.read()
+                else:
+                    # Check if already in Supabase
+                    try:
+                        file_bytes = self.supabase_client.storage.from_(bucket_name).download(f"theses/{session_id}/formatted_thesis.docx")
+                    except Exception:
+                        pass
 
-                # Upload to Supabase Storage
-                self.supabase_client.storage.from_(bucket_name).upload(
-                    path=cloud_dest_path,
-                    file=file_bytes,
-                    file_options={"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "upsert": "true"}
-                )
+                if file_bytes:
+                    # Upload formatted deliverable with final filename
+                    self.supabase_client.storage.from_(bucket_name).upload(
+                        path=cloud_dest_path,
+                        file=file_bytes,
+                        file_options={"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "upsert": "true"}
+                    )
 
                 # Generate 24-hour signed download URL
                 expiry_seconds = settings.SIGNED_URL_EXPIRY_HOURS * 3600
