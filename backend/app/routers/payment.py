@@ -4,7 +4,7 @@ import asyncio
 import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, status, Header
+from fastapi import APIRouter, HTTPException, status, Header, BackgroundTasks
 from fastapi.responses import FileResponse
 from app.models.payment import (
     InitiateCBEPaymentRequest,
@@ -136,7 +136,10 @@ async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
 
 @router.post("/payment/submit-cbe-txn", response_model=SubmitCBETransactionResponse)
 @router.post("/submit-cbe-transaction", response_model=SubmitCBETransactionResponse)
-async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
+async def submit_cbe_transaction(
+    payload: SubmitCBETransactionRequest,
+    background_tasks: BackgroundTasks
+):
     """
     Called by user from frontend to associate their entered CBE Transaction ID
     with the current session and trigger an immediate Gmail IMAP / webhook check.
@@ -147,7 +150,7 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     if not clean_ref or len(clean_ref) < 3:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please provide a valid CBE Transaction ID (e.g., FT2609384729)."
+            detail="Please provide a valid CBE Transaction ID (e.g., FT2609384729 or 10-digit code)."
         )
 
     session = storage_service.get_session(payload.session_id)
@@ -213,24 +216,7 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
         existing_status = "approved"
         download_url = _local_transactions_db[clean_ref].get("download_url")
 
-    # 4. Trigger immediate targeted on-demand Gmail IMAP check if configured
-    if existing_status != "approved" and cbe_imap_service.is_configured():
-        safe_print(f"[CBE Submit Txn] Triggering immediate targeted Gmail IMAP scan for '{clean_ref}'...")
-        try:
-            await asyncio.to_thread(cbe_imap_service.check_gmail_receipts, clean_ref)
-            refreshed_session = storage_service.get_session(payload.session_id)
-            if refreshed_session and refreshed_session.get("is_paid", False):
-                existing_status = "approved"
-                download_url = refreshed_session.get("download_url")
-            elif _local_transactions_db.get(clean_ref, {}).get("status") == "approved":
-                existing_status = "approved"
-                download_url = _local_transactions_db[clean_ref].get("download_url")
-            elif storage_service.get_preverified_transaction(clean_ref):
-                existing_status = "approved"
-        except Exception as e:
-            safe_print(f"[IMAP on-demand check notice] {e}")
-
-    # 5. If approved, mark session paid and return download URL
+    # 4. If approved, mark session paid and return download URL immediately
     if existing_status == "approved" or session.get("is_paid", False):
         updated_session = storage_service.mark_session_paid(payload.session_id, clean_ref)
         safe_print(f"[CBE Submit Txn] ✅ Transaction '{clean_ref}' verified! Returning download URL.")
@@ -244,6 +230,11 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
             file_name=updated_session.get("download_filename", "Formatted_Thesis.docx")
         )
 
+    # 5. Non-blocking Background IMAP scan: trigger asynchronously so HTTP response is instant
+    if cbe_imap_service.is_configured():
+        safe_print(f"[CBE Submit Txn] Scheduling background Gmail IMAP scan for '{clean_ref}'...")
+        background_tasks.add_task(cbe_imap_service.check_gmail_receipts, clean_ref)
+
     txn_record = {
         "session_id": payload.session_id,
         "amount_expected": amount_expected,
@@ -255,13 +246,13 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     _local_transactions_db[clean_ref] = txn_record
     _local_transactions_db[payload.session_id] = txn_record
 
-    safe_print(f"[CBE Submit Txn] Transaction '{clean_ref}' registered with status 'pending'. Awaiting IMAP / Webhook receipt...")
+    safe_print(f"[CBE Submit Txn] Transaction '{clean_ref}' registered with status 'pending'. Auto-polling IMAP...")
     return SubmitCBETransactionResponse(
         status="pending",
         session_id=payload.session_id,
         transaction_ref=clean_ref,
         amount_expected=amount_expected,
-        message="Transaction ID registered. Checking CBE receipts and awaiting confirmation..."
+        message="Transaction ID registered. Checking CBE receipts live..."
     )
 
 @router.post("/payment/cbe-email-webhook", response_model=CBEWebhookResponse)
@@ -537,27 +528,14 @@ async def check_transaction_status(session_id: str):
         except Exception as e:
             safe_print(f"[Supabase Status Check Notice] {e}")
 
-    # 5. On-demand IMAP scan during polling (cooldown: 2 seconds)
+    # 5. Non-blocking On-demand IMAP scan during polling (cooldown: 2 seconds)
     if submitted_ref and cbe_imap_service.is_configured():
         now = time.time()
         last_check = _last_imap_check_time.get(session_id, 0)
         if now - last_check >= 2.0:
             _last_imap_check_time[session_id] = now
             try:
-                await asyncio.to_thread(cbe_imap_service.check_gmail_receipts, submitted_ref)
-                refreshed = storage_service.get_session(session_id)
-                if refreshed and refreshed.get("is_paid", False):
-                    return CheckTransactionStatusResponse(
-                        status="approved",
-                        session_id=session_id,
-                        transaction_ref=submitted_ref,
-                        amount_expected=amount_expected,
-                        amount_paid=amount_expected,
-                        verified=True,
-                        download_url=refreshed.get("download_url"),
-                        file_name=refreshed.get("download_filename", "Formatted_Thesis.docx"),
-                        message="Payment verified! Formatted thesis ready for download."
-                    )
+                asyncio.create_task(asyncio.to_thread(cbe_imap_service.check_gmail_receipts, submitted_ref))
             except Exception as e:
                 safe_print(f"[Polling IMAP check notice] {e}")
 
