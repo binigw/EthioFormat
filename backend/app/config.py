@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -14,6 +15,9 @@ elif root_env.exists():
 else:
     load_dotenv()
 
+# Safe cross-platform staging directory (/tmp/ethioformat_staging on Linux/Render)
+default_staging_dir = str(Path(tempfile.gettempdir()) / "ethioformat_staging")
+
 class Settings(BaseModel):
     APP_NAME: str = "EthioFormat API"
     APP_VERSION: str = "2.0.0"
@@ -25,8 +29,8 @@ class Settings(BaseModel):
     INCREMENTAL_PER_PAGE_FEE_ETB: float = float(os.getenv("INCREMENTAL_PER_PAGE_FEE_ETB", "1.50"))
     
     # CBE Birr Account Details for Direct Bank Transfers
-    CBE_ACCOUNT_NUMBER: str = os.getenv("CBE_ACCOUNT_NUMBER", "1000123456789")
-    CBE_ACCOUNT_NAME: str = os.getenv("CBE_ACCOUNT_NAME", "EthioFormat / Thesis Automation Services")
+    CBE_ACCOUNT_NUMBER: str = os.getenv("CBE_ACCOUNT_NUMBER", "1000659424936")
+    CBE_ACCOUNT_NAME: str = os.getenv("CBE_ACCOUNT_NAME", "BINIAM KEBEDE AMADE")
     
     # Gmail IMAP Configuration for Automated Receipt Checking
     GMAIL_IMAP_SERVER: str = os.getenv("GMAIL_IMAP_SERVER", "imap.gmail.com")
@@ -40,8 +44,8 @@ class Settings(BaseModel):
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     SUPABASE_BUCKET_NAME: str = os.getenv("SUPABASE_BUCKET_NAME", "ethioformat-documents")
     
-    # Local Storage Staging Path (for encrypted/secure session holding)
-    STORAGE_STAGING_DIR: str = os.getenv("STORAGE_STAGING_DIR", "/home/user/backend/storage_temp")
+    # Local Storage Staging Path (for multi-worker cross-process session retention)
+    STORAGE_STAGING_DIR: str = os.getenv("STORAGE_STAGING_DIR", default_staging_dir)
     
     # Temporary signed link validity
     SIGNED_URL_EXPIRY_HOURS: int = int(os.getenv("SIGNED_URL_EXPIRY_HOURS", "24"))

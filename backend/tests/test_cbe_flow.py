@@ -54,6 +54,19 @@ def test_cbe_email_parser_standard():
     assert receipt["amount"] == 65.00
     assert receipt["payer_name"] == "ABEBE BIKILA"
 
+def test_cbe_email_parser_coopay_and_cbe_sms():
+    # COOPay-EBIRR SMS from screenshot
+    sms_coopay = "[-EBIRR-COOPay-] Transfer ID: 2799024023, You have successfully transferred ETB 63.50 to 1000659424936 BINIAM KEBEDE AMADE."
+    res1 = CBEEmailParserService.parse_full_cbe_payload(sms_coopay)
+    assert res1["transaction_ref"] == "2799024023"
+    assert res1["amount"] == 63.50
+
+    # CBE Core banking SMS from screenshot
+    sms_cbe = "Dear Mr Biniam your Account 1********4936 has been credited with ETB 63.50 on 10/4/2026. Reason: Transfer ID 2799024023."
+    res2 = CBEEmailParserService.parse_full_cbe_payload(sms_cbe)
+    assert res2["transaction_ref"] == "2799024023"
+    assert res2["amount"] == 63.50
+
 def test_cbe_email_parser_hidden_unicode_and_ltr_marks():
     sample_text_with_hidden_unicode = (
         "\u200eDear\u200b Customer,\u00a0"

@@ -27,48 +27,55 @@ INVISIBLE_UNICODE_CHARS = {
 
 class CBEEmailParserService:
     """
-    High-accuracy Multi-Format Regular Expression & NLP Parser for
-    Commercial Bank of Ethiopia (CBE) Email Notifications, CBE Birr Mailhooks,
-    CBE Mobile Banking SMS forwards, and Core Banking Confirmation Receipts.
+    High-accuracy Multi-Format Regular Expression & NLP Parser for:
+    - Commercial Bank of Ethiopia (CBE) Mobile Banking SMS & Email Notifications
+    - CBE Birr / Core Banking Receipts
+    - COOPay-EBIRR / EBIRR Transfer SMS & Receipts
+    - Telebirr & Academic payment confirmations
     """
 
-    # 1. Patterns for CBE Transaction Reference / FT Number / CBEBirr Numeric ID
+    # 1. Patterns for Transaction Reference / FT Number / CBEBirr & COOPay Transfer IDs
     TXN_PATTERNS = [
         # Explicit FT Numbers (Standard CBE Mobile Banking / Core Banking FT number)
         re.compile(r'\b(FT[0-9]{6,20}[A-Za-z0-9]*)\b', re.IGNORECASE),
-        # Explicit TXN / CBEBirr / TT Transaction Codes
+        # Explicit TXN / CBEBirr / TT / EBIRR Transaction Codes
         re.compile(r'\b(TXN[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
         re.compile(r'\b(CBE[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
         re.compile(r'\b(TT[0-9A-Za-z]{6,24})\b', re.IGNORECASE),
-        # Labelled Transaction ID / Ref / Reference / Receipt / Code (English & Amharic)
+        # COOPay-EBIRR & EBIRR Transfer SMS (e.g., "[-EBIRR-COOPay-] Transfer ID: 2799024023")
+        re.compile(r'\[-?EBIRR-COOPay-?\]\s*(?:Transfer\s*ID|Txn|Ref)?\s*[:=\-]?\s*([0-9A-Za-z]{6,24})', re.IGNORECASE),
+        re.compile(r'(?:COOPay|EBIRR|COOPayEBIRR)\s*(?:Transfer\s*ID|Txn|Ref|ID)?\s*[:=\-]?\s*([0-9A-Za-z]{6,24})', re.IGNORECASE),
+        # Explicit "Transfer ID: ..." / "Transaction ID: ..." / "Txn ID: ..." / "Ref: ..."
         re.compile(
-            r'\b(?:Transaction|Txn|Ref(?:erence)?|Receipt|FT|TT|Code|የግብይት\s*ቁጥር|የማጣቀሻ\s*ቁጥር|የትራንዛክሽን\s*ቁጥር|መለያ\s*ቁጥር)(?:\s*(?:ID|Ref|Reference|Number|No\.?|Code))?\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})\b',
+            r'\b(?:Transfer|Transaction|Txn|Ref(?:erence)?|Receipt|FT|TT|Code|የግብይት\s*ቁጥር|የማጣቀሻ\s*ቁጥር|የትራንዛክሽን\s*ቁጥር|መለያ\s*ቁጥር)(?:\s*(?:ID|Ref|Reference|Number|No\.?|Code))?\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})\b',
             re.IGNORECASE
         ),
-        # Sentence structures: "transfer with reference ...", "deposited with ref ..."
+        # Sentence structures: "transfer with reference ...", "deposited with ref ...", "transferred with ID ..."
         re.compile(
-            r'(?:transfer(?:red)?|deposit(?:ed)?|credit(?:ed)?|paid)\s+(?:with\s+)?(?:reference|ref|id|txn)\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})',
+            r'(?:transfer(?:red)?|deposit(?:ed)?|credit(?:ed)?|paid)\s+(?:with\s+)?(?:reference|ref|id|txn|code)\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})',
             re.IGNORECASE
         ),
-        # CBEBirr 10-18 numeric transaction IDs following keyword or starting with 2
+        # CBEBirr / Telebirr 10-18 numeric transaction IDs following keyword or starting with 2
         re.compile(r'(?:CBEBirr\s*(?:Txn|Ref|ID|Transaction)|Birr\s*Ref)\s*[:=\-]?\s*([0-9]{8,18})', re.IGNORECASE),
-        # Standalone CBEBirr 10-digit numeric transaction IDs (e.g. 2798853639)
+        # Standalone 10-digit numeric transaction IDs (e.g. 2799024023, 2798853639)
         re.compile(r'\b(2[0-9]{9,15})\b', re.IGNORECASE),
     ]
 
     # 2. Patterns for Payment Amount in ETB / Birr
     AMOUNT_PATTERNS = [
-        # Labelled Amount: "Amount: ETB 50.00" / "መጠን: 50.00 ብር"
+        # Labelled Amount: "Amount: ETB 63.50" / "መጠን: 63.50 ብር"
         re.compile(
             r'(?:Amount|Total\s*Amount|Credited|Transferred|Paid|Deposited|መጠን|የተከፈለው)\s*[:=\-]?\s*(?:ETB|Birr|USD|ብር)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)\s*(?:ETB|Birr|ብር)?',
             re.IGNORECASE
         ),
-        # Currency prefix: "ETB 50.00" or "Birr 50" or "ብር 50"
+        # Currency prefix: "ETB 63.50" or "Birr 50" or "ብር 63.50"
         re.compile(r'(?:ETB|Birr|ብር)\s*[:=\-]?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE),
-        # Currency suffix: "50.00 ETB" or "50.00 Birr" or "50 ብር"
+        # Currency suffix: "63.50 ETB" or "50.00 Birr" or "63.50 ብር"
         re.compile(r'([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)\s*(?:ETB|Birr|ብር)', re.IGNORECASE),
-        # Verb with amount: "credited with 50.00", "deposited 50.00"
-        re.compile(r'(?:credited\s+with|deposited|received|paid)\s+(?:ETB|Birr|ብር)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE),
+        # Verb with amount: "credited with 63.50", "credited with ETB 63.50", "deposited 50.00"
+        re.compile(r'(?:credited\s+with|deposited|received|paid|transferred)\s+(?:ETB|Birr|ብር)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE),
+        # Account credited notice: "your Account ... has been credited with ETB 63.50"
+        re.compile(r'(?:credited|deposited)\s+(?:with\s+)?(?:ETB|Birr|ብር)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE),
     ]
 
     # 3. Patterns for Payer / Sender Name
@@ -82,7 +89,7 @@ class CBEEmailParserService:
 
     # 4. Patterns for Account Number
     ACCOUNT_PATTERNS = [
-        re.compile(r'(?:Account|Acc(?:\.?|ount)|Acc\s*No\.?|A\/C|የሂሳብ\s*ቁጥር)\s*[:=\-]?\s*([0-9]{10,16}|\*+[0-9]{4})', re.IGNORECASE),
+        re.compile(r'(?:Account|Acc(?:\.?|ount)|Acc\s*No\.?|A\/C|የሂሳብ\s*ቁጥር)\s*[:=\-]?\s*([0-9]{10,16}|\*+[0-9]{4}|1\*+[0-9]{4})', re.IGNORECASE),
     ]
 
     # 5. Patterns for Date & Time
@@ -135,7 +142,7 @@ class CBEEmailParserService:
     def parse_full_cbe_payload(cls, raw_text: str, subject: Optional[str] = None) -> Dict[str, Any]:
         """
         Parses all key fields from email payload:
-        - Transaction Reference / ID (FT number, TXN ref, CBEBirr numeric ID)
+        - Transaction Reference / ID (FT number, TXN ref, CBEBirr & COOPay numeric ID)
         - Payment Amount (ETB)
         - Payer Name
         - Account Number
