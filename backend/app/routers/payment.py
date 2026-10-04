@@ -41,6 +41,7 @@ def get_cbe_details():
     }
 
 @router.post("/initiate-cbe-payment", response_model=InitiateCBEPaymentResponse)
+@router.post("/payment/initiate-cbe", response_model=InitiateCBEPaymentResponse)
 async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
     """
     Accepts session_id, calculates the exact total_fee dynamically based on
@@ -67,11 +68,9 @@ async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
     amount_expected = pricing_model.total_fee
 
     initial_txn_ref = payload.transaction_ref or f"PENDING-{payload.session_id[:10]}-{int(time.time())}"
-    
     txn_record = {
         "session_id": payload.session_id,
         "amount_expected": amount_expected,
-        "amount_paid": None,
         "transaction_ref": initial_txn_ref,
         "status": "pending",
         "cbe_account_number": settings.CBE_ACCOUNT_NUMBER,
@@ -79,10 +78,10 @@ async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
         "payer_email": payload.student_email,
         "payer_name": payload.student_name,
         "payer_phone": payload.student_phone,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
+        "created_at": time.time()
     }
 
-    # Store in Supabase 'transactions' table if available
+    # Save to Supabase transactions table if table exists
     client = storage_service.supabase_client
     if client:
         try:
@@ -120,6 +119,7 @@ async def initiate_cbe_payment(payload: InitiateCBEPaymentRequest):
     )
 
 @router.post("/payment/submit-cbe-txn", response_model=SubmitCBETransactionResponse)
+@router.post("/submit-cbe-transaction", response_model=SubmitCBETransactionResponse)
 async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     """
     Called by user from frontend to associate their entered CBE Transaction ID
@@ -203,6 +203,7 @@ async def submit_cbe_transaction(payload: SubmitCBETransactionRequest):
     )
 
 @router.post("/payment/cbe-email-webhook", response_model=CBEWebhookResponse)
+@router.post("/cbe-email-webhook", response_model=CBEWebhookResponse)
 async def cbe_email_webhook(
     payload: CBEWebhookPayload,
     authorization: Optional[str] = Header(None)
@@ -341,6 +342,7 @@ async def cbe_email_webhook(
     )
 
 @router.get("/payment/status/{session_id}", response_model=CheckTransactionStatusResponse)
+@router.get("/cbe-transaction-status/{session_id}", response_model=CheckTransactionStatusResponse)
 async def check_transaction_status(session_id: str):
     """
     Polling Endpoint for Frontend:
@@ -363,102 +365,103 @@ async def check_transaction_status(session_id: str):
             verified=True,
             download_url=session.get("download_url"),
             file_name=session.get("download_filename", "Formatted_Thesis.docx"),
-            message="Payment approved! Your thesis is ready for download."
+            message="Payment verified! Formatted thesis ready for download."
         )
 
-    client = storage_service.supabase_client
-    if client:
-        try:
-            query = client.table("transactions").select("*").eq("session_id", session_id).order("created_at", desc=True).limit(1).execute()
-            if query.data and len(query.data) > 0:
-                row = query.data[0]
-                status_val = row.get("status", "pending")
-                if status_val == "approved":
-                    tx_ref = row.get("transaction_ref", "CBE-VERIFIED")
-                    upd = storage_service.mark_session_paid(session_id, tx_ref)
-                    return CheckTransactionStatusResponse(
-                        status="approved",
-                        session_id=session_id,
-                        transaction_ref=tx_ref,
-                        amount_expected=float(row.get("amount_expected", amount_expected)),
-                        amount_paid=float(row.get("amount_paid", amount_expected)),
-                        verified=True,
-                        download_url=upd.get("download_url"),
-                        file_name=upd.get("download_filename", "Formatted_Thesis.docx"),
-                        message="Payment confirmed via CBE Automated System!"
-                    )
-                elif status_val == "failed":
-                    return CheckTransactionStatusResponse(
-                        status="failed",
-                        session_id=session_id,
-                        transaction_ref=row.get("transaction_ref"),
-                        amount_expected=amount_expected,
-                        verified=False,
-                        message="Payment verification failed or insufficient amount transferred."
-                    )
-        except Exception as e:
-            print(f"[Supabase Status Polling] Notice: {e}")
-
+    # Check local in-memory transactions db
     if session_id in _local_transactions_db:
-        loc = _local_transactions_db[session_id]
-        if loc.get("status") == "approved":
+        rec = _local_transactions_db[session_id]
+        if rec.get("status") == "approved":
             return CheckTransactionStatusResponse(
                 status="approved",
                 session_id=session_id,
-                transaction_ref=loc.get("transaction_ref"),
-                amount_expected=amount_expected,
-                amount_paid=loc.get("amount_paid"),
+                transaction_ref=rec.get("transaction_ref"),
+                amount_expected=float(rec.get("amount_expected", amount_expected)),
+                amount_paid=float(rec.get("amount_paid", amount_expected)),
                 verified=True,
-                download_url=loc.get("download_url"),
-                file_name="Formatted_Thesis.docx",
-                message="Payment approved!"
+                download_url=rec.get("download_url"),
+                message="Payment verified! Formatted thesis ready for download."
             )
+
+    # Check Supabase transactions table
+    client = storage_service.supabase_client
+    if client:
+        try:
+            res = client.table("transactions").select("*").eq("session_id", session_id).execute()
+            if res.data and len(res.data) > 0:
+                rec = res.data[0]
+                status_val = rec.get("status", "pending")
+                is_approved = status_val == "approved"
+                return CheckTransactionStatusResponse(
+                    status=status_val,
+                    session_id=session_id,
+                    transaction_ref=rec.get("transaction_ref"),
+                    amount_expected=float(rec.get("amount_expected", amount_expected)),
+                    amount_paid=float(rec.get("amount_paid", 0.0)) if rec.get("amount_paid") else None,
+                    verified=is_approved,
+                    download_url=rec.get("download_url"),
+                    message="Payment approved!" if is_approved else "Payment pending verification."
+                )
+        except Exception as e:
+            print(f"[Supabase Status Check Notice] {e}")
 
     return CheckTransactionStatusResponse(
         status="pending",
         session_id=session_id,
         amount_expected=amount_expected,
         verified=False,
-        message="Waiting for CBE payment confirmation..."
+        message="Awaiting CBE transfer verification..."
     )
 
 @router.get("/download/{session_id}")
-async def download_formatted_file(session_id: str):
+async def download_formatted_thesis(session_id: str):
     """
-    Secure file delivery endpoint for paid sessions.
-    Strictly forbids access if session is unpaid.
-    Guards against path traversal by validating session_id and resolving canonical paths.
+    Direct Secure Download Endpoint (Internal Fallback):
+    Guarantees download if Supabase Storage is offline or experiencing network latency.
     """
     if not SAFE_ID_REGEX.match(session_id):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid session identifier.")
+        raise HTTPException(status_code=400, detail="Invalid session ID.")
 
     session = storage_service.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or expired.")
+        raise HTTPException(status_code=404, detail="Thesis session not found or expired.")
 
     if not session.get("is_paid", False):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied. CBE payment must be verified before downloading the complete formatted document."
-        )
+        # Check local and database approvals
+        is_approved = False
+        if session_id in _local_transactions_db and _local_transactions_db[session_id].get("status") == "approved":
+            is_approved = True
 
-    file_path_str = session.get("formatted_docx_path")
-    if not file_path_str:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Formatted file not registered.")
+        client = storage_service.supabase_client
+        if not is_approved and client:
+            try:
+                res = client.table("transactions").select("status").eq("session_id", session_id).execute()
+                if res.data and res.data[0].get("status") == "approved":
+                    is_approved = True
+            except Exception:
+                pass
 
-    file_path = Path(file_path_str).resolve()
-    staging_base = Path(settings.STORAGE_STAGING_DIR).resolve()
+        if not is_approved:
+            raise HTTPException(
+                status_code=403,
+                detail="Payment required to download full formatted thesis."
+            )
 
-    if not str(file_path).startswith(str(staging_base)) or not file_path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Formatted file not found on server.")
+    docx_path = session.get("formatted_docx_path")
+    if not docx_path or not Path(docx_path).exists():
+        session_dir = storage_service.get_session_dir(session_id)
+        candidate = session_dir / "formatted_thesis.docx"
+        if candidate.exists():
+            docx_path = str(candidate)
+        else:
+            raise HTTPException(status_code=404, detail="Formatted document file not found on disk.")
 
-    original_name = session.get("original_filename", "Thesis.docx")
-    safe_filename = re.sub(r'[^a-zA-Z0-9_.-]', '_', original_name)
-    download_filename = f"Formatted_{safe_filename}" if not safe_filename.startswith("Formatted_") else safe_filename
+    original_filename = session.get("original_filename", "Formatted_Thesis.docx")
+    if not original_filename.startswith("Formatted_"):
+        original_filename = f"Formatted_{original_filename}"
 
     return FileResponse(
-        path=str(file_path),
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=download_filename,
-        headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
+        path=docx_path,
+        filename=original_filename,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
