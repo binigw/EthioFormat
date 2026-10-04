@@ -7,7 +7,6 @@ import { initiateCBEPayment, submitCBETransaction, checkTransactionStatus } from
 import {
   X,
   Building,
-  CreditCard,
   ShieldCheck,
   CheckCircle2,
   Loader2,
@@ -18,7 +17,6 @@ import {
   Smartphone,
   AlertCircle,
   Clock,
-  Sparkles,
 } from "lucide-react";
 import confetti from "canvas-confetti";
 
@@ -49,7 +47,8 @@ export function PaymentModal({
   const [payerName, setPayerName] = useState("");
   const [payerPhone, setPayerPhone] = useState("");
 
-  // States
+  // Validation & Status States
+  const [txnInputError, setTxnInputError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
@@ -66,6 +65,7 @@ export function PaymentModal({
     let mounted = true;
     setIsInitializing(true);
     setErrorMessage(null);
+    setTxnInputError(null);
 
     initiateCBEPayment(sessionId)
       .then((data) => {
@@ -124,12 +124,15 @@ export function PaymentModal({
 
   const handleSubmitTxn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!transactionRef.trim()) {
-      setErrorMessage("Please enter your CBE Transaction ID / Reference (FT number).");
+    setErrorMessage(null);
+
+    // Custom Validation: Check if Transaction ID is empty or whitespace
+    if (!transactionRef || !transactionRef.trim()) {
+      setTxnInputError("Please enter your Transaction ID.");
       return;
     }
 
-    setErrorMessage(null);
+    setTxnInputError(null);
     setIsSubmitting(true);
     setStatusMessage("Registering CBE Transaction ID...");
 
@@ -159,7 +162,7 @@ export function PaymentModal({
           file_name: res.file_name,
         });
       } else {
-        // Start polling for the incoming email webhook
+        // Start polling for the incoming email webhook / IMAP
         startPollingStatus();
       }
     } catch (err: any) {
@@ -186,10 +189,10 @@ export function PaymentModal({
   const exactAmount = initData?.amount_expected ?? pricing.total_fee;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-md animate-in fade-in-50 duration-200 overflow-y-auto">
-      <div className="relative w-full max-w-lg my-6 bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in-50 duration-200 overflow-y-auto">
+      <div className="relative w-full max-w-lg my-6 bg-slate-900 text-slate-100 rounded-3xl shadow-2xl border border-slate-800 overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="bg-gradient-to-r from-purple-900 via-indigo-900 to-purple-800 px-6 py-5 text-white flex items-center justify-between">
+        <div className="bg-gradient-to-r from-purple-950 via-indigo-950 to-purple-900 px-6 py-5 text-white flex items-center justify-between border-b border-purple-900/50">
           <div className="flex items-center gap-3">
             <div className="p-2.5 rounded-2xl bg-white/10 backdrop-blur-md text-amber-300 border border-white/10">
               <Building className="h-6 w-6" />
@@ -201,7 +204,7 @@ export function PaymentModal({
                   Official
                 </span>
               </h3>
-              <p className="text-xs text-purple-200">{universityName}</p>
+              <p className="text-xs text-purple-300">{universityName}</p>
             </div>
           </div>
           <button
@@ -215,22 +218,22 @@ export function PaymentModal({
         </div>
 
         {/* Pricing Summary */}
-        <div className="bg-purple-50/70 px-6 py-3.5 border-b border-purple-100 flex items-center justify-between">
+        <div className="bg-slate-950/70 px-6 py-3.5 border-b border-slate-800 flex items-center justify-between">
           <div>
-            <div className="text-xs text-slate-500 font-medium">Exact Total Amount ({totalPages} Pages):</div>
-            <div className="text-2xl font-black text-purple-950 flex items-center gap-2">
+            <div className="text-xs text-slate-400 font-medium">Exact Total Amount ({totalPages} Pages):</div>
+            <div className="text-2xl font-black text-amber-400 flex items-center gap-2">
               <span>{formatETB(exactAmount)}</span>
               <button
                 type="button"
                 onClick={() => copyToClipboard(String(exactAmount), "amount")}
-                className="text-xs text-purple-700 hover:text-purple-900 p-1 rounded hover:bg-purple-100"
+                className="text-xs text-amber-300 hover:text-amber-200 p-1 rounded hover:bg-slate-800"
                 title="Copy Amount"
               >
-                {copiedAmount ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+                {copiedAmount ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
               </button>
             </div>
           </div>
-          <div className="text-right text-xs text-slate-500">
+          <div className="text-right text-xs text-slate-400">
             <div>Base (20 pgs): {formatETB(pricing.base_fee)}</div>
             {pricing.incremental_fee > 0 && (
               <div>Extra: +{formatETB(pricing.incremental_fee)}</div>
@@ -241,7 +244,7 @@ export function PaymentModal({
         {/* Body Content */}
         <div className="p-6 space-y-5">
           {/* Bank Account Details Card */}
-          <div className="p-4 rounded-2xl bg-slate-900 text-white space-y-3 shadow-inner">
+          <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3 shadow-inner">
             <div className="flex items-center justify-between text-xs text-purple-300">
               <span className="font-semibold flex items-center gap-1.5">
                 <Smartphone className="h-4 w-4 text-amber-400" /> Commercial Bank of Ethiopia (CBE)
@@ -249,7 +252,7 @@ export function PaymentModal({
               <span className="text-amber-400 font-mono text-[11px]">CBEBirr / Mobile Banking</span>
             </div>
 
-            <div className="p-3 rounded-xl bg-white/10 border border-white/10 flex items-center justify-between">
+            <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
               <div>
                 <div className="text-[11px] text-slate-400">Account Number:</div>
                 <div className="font-mono text-lg font-black tracking-wider text-amber-300">
@@ -275,82 +278,97 @@ export function PaymentModal({
               </button>
             </div>
 
-            <div className="text-xs text-slate-300 flex items-center justify-between pt-1 border-t border-white/10">
+            {/* Account Name with uppercase Tailwind class */}
+            <div className="text-xs text-slate-300 flex items-center justify-between pt-1 border-t border-slate-800/80">
               <span className="text-slate-400">Account Name:</span>
-              <span className="font-medium text-white">{cbeAccName}</span>
+              <span className="font-bold text-white uppercase tracking-wider">{cbeAccName}</span>
             </div>
           </div>
 
           {/* Transfer Instructions */}
-          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-1">
-            <div className="font-bold flex items-center gap-1.5 text-amber-950">
-              <Clock className="h-4 w-4 text-amber-700" />
+          <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-800/50 text-xs text-amber-200 space-y-1">
+            <div className="font-bold flex items-center gap-1.5 text-amber-300">
+              <Clock className="h-4 w-4 text-amber-400" />
               <span>How to pay & unlock instant download:</span>
             </div>
-            <ol className="list-decimal list-inside space-y-0.5 text-[11px] text-amber-800">
+            <ol className="list-decimal list-inside space-y-0.5 text-[11px] text-amber-300/90">
               <li>Transfer <strong>{formatETB(exactAmount)}</strong> via CBE Mobile Banking or CBE Birr app.</li>
               <li>Copy the <strong>Transaction ID / Reference (FT number)</strong> from the SMS or slip.</li>
               <li>Paste the Transaction ID below to verify and unlock your full thesis instantly.</li>
             </ol>
           </div>
 
-          {/* Transaction Submission Form */}
-          <form onSubmit={handleSubmitTxn} className="space-y-4">
+          {/* Transaction Submission Form with noValidate */}
+          <form onSubmit={handleSubmitTxn} noValidate className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
                 <span>Enter CBE Transaction ID / Reference (FT number)</span>
-                <span className="text-rose-500">*</span>
+                <span className="text-rose-400">*</span>
               </label>
               <input
                 type="text"
-                required
                 disabled={isSubmitting || isPolling}
                 placeholder="e.g. FT2609871234 or TXN987654"
                 value={transactionRef}
-                onChange={(e) => setTransactionRef(e.target.value.toUpperCase())}
-                className="w-full px-4 py-3 text-sm font-mono font-bold tracking-wide border-2 border-purple-300 rounded-xl focus:outline-none focus:border-purple-600 focus:ring-2 focus:ring-purple-200 uppercase bg-purple-50/30"
+                onChange={(e) => {
+                  setTransactionRef(e.target.value.toUpperCase());
+                  if (txnInputError) setTxnInputError(null);
+                }}
+                className={`w-full px-4 py-3 text-sm font-mono font-bold tracking-wide border-2 rounded-xl focus:outline-none uppercase bg-slate-950 text-slate-100 transition-colors ${
+                  txnInputError
+                    ? "border-rose-500 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20"
+                    : "border-purple-800 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20"
+                }`}
               />
+
+              {/* Custom UI Validation Message (No browser popup) */}
+              {txnInputError && (
+                <p className="text-xs text-rose-400 font-medium flex items-center gap-1.5 mt-1 animate-in fade-in-50">
+                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 text-rose-400" />
+                  <span>{txnInputError}</span>
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <label className="text-[11px] font-medium text-slate-600">Payer Name (Optional)</label>
+                <label className="text-[11px] font-medium text-slate-400">Payer Name (Optional)</label>
                 <input
                   type="text"
                   disabled={isSubmitting || isPolling}
                   placeholder="e.g. Abebe Bikila"
                   value={payerName}
                   onChange={(e) => setPayerName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-purple-500"
+                  className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:border-purple-500 text-slate-200"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-medium text-slate-600">Phone Number (Optional)</label>
+                <label className="text-[11px] font-medium text-slate-400">Phone Number (Optional)</label>
                 <input
                   type="tel"
                   disabled={isSubmitting || isPolling}
                   placeholder="0911223344"
                   value={payerPhone}
                   onChange={(e) => setPayerPhone(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-purple-500"
+                  className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-800 rounded-lg focus:outline-none focus:border-purple-500 text-slate-200"
                 />
               </div>
             </div>
 
             {errorMessage && (
-              <div className="p-3 text-xs text-rose-700 bg-rose-50 rounded-xl border border-rose-200 flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 flex-shrink-0" />
+              <div className="p-3 text-xs text-rose-300 bg-rose-950/50 rounded-xl border border-rose-900 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 flex-shrink-0 text-rose-400" />
                 <span>{errorMessage}</span>
               </div>
             )}
 
             {isPolling && (
-              <div className="p-3 text-xs text-purple-900 bg-purple-50 rounded-xl border border-purple-200 flex items-center gap-2.5 animate-pulse">
-                <Loader2 className="h-4 w-4 animate-spin text-purple-700 flex-shrink-0" />
+              <div className="p-3 text-xs text-purple-200 bg-purple-950/40 rounded-xl border border-purple-800 flex items-center gap-2.5 animate-pulse">
+                <Loader2 className="h-4 w-4 animate-spin text-purple-400 flex-shrink-0" />
                 <div className="space-y-0.5">
-                  <div className="font-bold text-purple-950">Awaiting CBE Webhook Confirmation...</div>
-                  <div className="text-[11px] text-purple-700">Checking Transaction ID {transactionRef}</div>
+                  <div className="font-bold text-purple-100">Awaiting CBE Webhook Confirmation...</div>
+                  <div className="text-[11px] text-purple-300">Checking Transaction ID {transactionRef}</div>
                 </div>
               </div>
             )}
@@ -359,7 +377,7 @@ export function PaymentModal({
               <button
                 type="submit"
                 disabled={isSubmitting || isInitializing}
-                className="w-full py-4 px-4 bg-gradient-to-r from-purple-800 via-indigo-900 to-purple-900 hover:from-purple-900 hover:to-indigo-950 text-white font-extrabold text-sm rounded-2xl shadow-xl shadow-purple-900/30 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                className="w-full py-4 px-4 bg-gradient-to-r from-purple-700 via-indigo-800 to-purple-800 hover:from-purple-800 hover:to-indigo-900 text-white font-extrabold text-sm rounded-2xl shadow-xl shadow-purple-950/50 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer border border-purple-500/30"
               >
                 {isSubmitting ? (
                   <>
@@ -383,7 +401,7 @@ export function PaymentModal({
           </form>
 
           <div className="text-center text-[11px] text-slate-400 flex items-center justify-center gap-1.5">
-            <ShieldCheck className="h-4 w-4 text-emerald-600" />
+            <ShieldCheck className="h-4 w-4 text-emerald-400" />
             <span>Automated CBE Email Webhook Engine • 24-Hour Supabase Storage Security</span>
           </div>
         </div>

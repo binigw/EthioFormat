@@ -12,28 +12,19 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="h-full dark" suppressHydrationWarning>
+    <html lang="en" className="dark h-full" style={{ colorScheme: "dark" }} suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
-                try {
-                  const saved = localStorage.getItem('ethioformat-theme');
-                  if (saved === 'light') {
-                    document.documentElement.classList.remove('dark');
-                  } else {
-                    document.documentElement.classList.add('dark');
-                  }
-                } catch (e) {
-                  document.documentElement.classList.add('dark');
-                }
+                document.documentElement.classList.add('dark');
               })();
             `,
           }}
         />
       </head>
-      <body className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased font-sans flex flex-col transition-colors duration-200">
+      <body className="min-h-screen bg-slate-950 text-slate-100 antialiased font-sans flex flex-col">
         {children}
       </body>
     </html>
