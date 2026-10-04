@@ -1,6 +1,9 @@
 import sys
+import io
+import os
 import imaplib
 import email
+import email.policy
 from email.header import decode_header
 import asyncio
 import time
@@ -13,16 +16,21 @@ from app.services.storage_service import storage_service
 
 def safe_print(msg: Any):
     """
-    Safely prints messages to stdout without crashing on ascii-only terminal streams.
+    Safely prints messages to stdout without crashing on ascii-only terminal streams or hidden unicode characters.
     """
     try:
-        print(msg)
+        s = cbe_email_parser.clean_raw_content(str(msg))
+        sys.stdout.write(s + "\n")
+        sys.stdout.flush()
     except UnicodeEncodeError:
         try:
-            cleaned = str(msg).encode('ascii', errors='replace').decode('ascii')
-            print(cleaned)
+            s_clean = str(msg).encode('ascii', errors='replace').decode('ascii')
+            sys.stdout.write(s_clean + "\n")
+            sys.stdout.flush()
         except Exception:
             pass
+    except Exception:
+        pass
 
 class CBEImapService:
     """
@@ -52,67 +60,105 @@ class CBEImapService:
             "is_running": self._is_running
         }
 
-    def _decode_str(self, header_val: Any) -> str:
-        if not header_val:
+    def _decode_header_safely(self, raw_header_val: Any) -> str:
+        """
+        Robust email header decoder that guarantees safe string conversion
+        without failing on raw 8-bit bytes or invisible directional Unicode characters.
+        """
+        if not raw_header_val:
             return ""
-        try:
-            if isinstance(header_val, bytes):
-                header_val = header_val.decode("utf-8", errors="ignore")
-            decoded_fragments = decode_header(header_val)
-            out = []
-            for frag, enc in decoded_fragments:
-                if isinstance(frag, bytes):
-                    charset = enc or "utf-8"
-                    try:
-                        out.append(frag.decode(charset, errors="ignore"))
-                    except (LookupError, UnicodeDecodeError):
-                        out.append(frag.decode("utf-8", errors="ignore"))
-                else:
-                    out.append(str(frag))
-            result = "".join(out)
-            return cbe_email_parser.clean_raw_content(result)
-        except Exception as e:
-            return cbe_email_parser.clean_raw_content(str(header_val))
 
-    def _extract_body(self, msg: email.message.Message) -> str:
+        try:
+            # 1. If already a string, clean invisible marks immediately
+            if isinstance(raw_header_val, str):
+                cleaned = cbe_email_parser.clean_raw_content(raw_header_val)
+                # If header looks MIME-encoded (=?utf-8?...), attempt decode_header
+                if "=?" in raw_header_val:
+                    try:
+                        fragments = decode_header(raw_header_val)
+                        out = []
+                        for frag, enc in fragments:
+                            if isinstance(frag, bytes):
+                                charset = enc or "utf-8"
+                                try:
+                                    out.append(frag.decode(charset, errors="ignore"))
+                                except Exception:
+                                    out.append(frag.decode("utf-8", errors="ignore"))
+                            else:
+                                out.append(str(frag))
+                        return cbe_email_parser.clean_raw_content("".join(out))
+                    except Exception:
+                        return cleaned
+                return cleaned
+
+            # 2. If bytes, decode with utf-8 fallback
+            if isinstance(raw_header_val, bytes):
+                return cbe_email_parser.clean_raw_content(
+                    raw_header_val.decode("utf-8", errors="ignore")
+                )
+
+            # 3. If Header registry object from email.policy.default
+            return cbe_email_parser.clean_raw_content(str(raw_header_val))
+
+        except Exception as e:
+            return cbe_email_parser.clean_raw_content(str(raw_header_val))
+
+    def _extract_body_safely(self, msg: Any) -> str:
+        """
+        Extracts plain text / HTML body parts with multi-encoding fallback and Unicode sanitization.
+        """
         body_parts = []
 
-        def _decode_bytes(b_data: bytes, enc: Optional[str]) -> str:
-            if not b_data:
-                return ""
-            for charset in [enc, "utf-8", "latin1", "windows-1252", "iso-8859-1"]:
-                if not charset:
-                    continue
+        try:
+            # Check for modern email message get_body
+            if hasattr(msg, "get_body"):
                 try:
-                    return b_data.decode(charset, errors="replace")
-                except (LookupError, UnicodeDecodeError):
-                    continue
-            return b_data.decode("utf-8", errors="ignore")
+                    plain_body = msg.get_body(preferencelist=('plain', 'html'))
+                    if plain_body:
+                        content = plain_body.get_content()
+                        if content:
+                            return cbe_email_parser.clean_raw_content(str(content))
+                except Exception:
+                    pass
 
-        if msg.is_multipart():
-            for part in msg.walk():
-                content_type = part.get_content_type()
-                content_disposition = str(part.get("Content-Disposition", ""))
-                if "attachment" not in content_disposition:
-                    if content_type in ["text/plain", "text/html"]:
-                        payload = part.get_payload(decode=True)
-                        if isinstance(payload, bytes):
-                            charset = part.get_content_charset()
-                            text = _decode_bytes(payload, charset)
-                            body_parts.append(text)
-                        elif isinstance(payload, str):
-                            body_parts.append(payload)
-        else:
-            payload = msg.get_payload(decode=True)
-            if isinstance(payload, bytes):
-                charset = msg.get_content_charset()
-                text = _decode_bytes(payload, charset)
-                body_parts.append(text)
-            elif isinstance(payload, str):
-                body_parts.append(payload)
+            def _decode_bytes(b_data: bytes, enc: Optional[str]) -> str:
+                if not b_data:
+                    return ""
+                for charset in [enc, "utf-8", "latin1", "windows-1252", "iso-8859-1"]:
+                    if not charset:
+                        continue
+                    try:
+                        return b_data.decode(charset, errors="replace")
+                    except Exception:
+                        continue
+                return b_data.decode("utf-8", errors="ignore")
 
-        raw_joined = "\n".join(body_parts)
-        return cbe_email_parser.clean_raw_content(raw_joined)
+            if hasattr(msg, "is_multipart") and msg.is_multipart():
+                for part in msg.walk():
+                    content_type = part.get_content_type()
+                    content_disposition = str(part.get("Content-Disposition", ""))
+                    if "attachment" not in content_disposition:
+                        if content_type in ["text/plain", "text/html"]:
+                            payload = part.get_payload(decode=True)
+                            if isinstance(payload, bytes):
+                                charset = part.get_content_charset()
+                                text = _decode_bytes(payload, charset)
+                                body_parts.append(text)
+                            elif isinstance(payload, str):
+                                body_parts.append(payload)
+            else:
+                payload = msg.get_payload(decode=True) if hasattr(msg, "get_payload") else str(msg)
+                if isinstance(payload, bytes):
+                    charset = msg.get_content_charset() if hasattr(msg, "get_content_charset") else None
+                    text = _decode_bytes(payload, charset)
+                    body_parts.append(text)
+                elif isinstance(payload, str):
+                    body_parts.append(payload)
+
+        except Exception as ex:
+            body_parts.append(str(ex))
+
+        return cbe_email_parser.clean_raw_content("\n".join(body_parts))
 
     def check_gmail_receipts(self) -> List[Dict[str, Any]]:
         """
@@ -142,40 +188,64 @@ class CBEImapService:
             email_ids_to_check = set()
 
             # Search unseen
-            status_unseen, resp_unseen = mail.search(None, "UNSEEN")
-            if status_unseen == "OK" and resp_unseen and resp_unseen[0]:
-                for eid in resp_unseen[0].split():
-                    email_ids_to_check.add(eid)
+            try:
+                status_unseen, resp_unseen = mail.search(None, "UNSEEN")
+                if status_unseen == "OK" and resp_unseen and resp_unseen[0]:
+                    for eid in resp_unseen[0].split():
+                        email_ids_to_check.add(eid)
+            except Exception as e_search:
+                safe_print(f"[CBE IMAP] Notice in search UNSEEN: {e_search}")
 
             # Search ALL to capture recent seen emails (last 25)
-            status_all, resp_all = mail.search(None, "ALL")
-            if status_all == "OK" and resp_all and resp_all[0]:
-                all_ids = resp_all[0].split()
-                # Take last 25 emails
-                for eid in all_ids[-25:]:
-                    email_ids_to_check.add(eid)
+            try:
+                status_all, resp_all = mail.search(None, "ALL")
+                if status_all == "OK" and resp_all and resp_all[0]:
+                    all_ids = resp_all[0].split()
+                    for eid in all_ids[-25:]:
+                        email_ids_to_check.add(eid)
+            except Exception as e_all:
+                safe_print(f"[CBE IMAP] Notice in search ALL: {e_all}")
 
             if not email_ids_to_check:
-                mail.close()
-                mail.logout()
+                try:
+                    mail.close()
+                    mail.logout()
+                except Exception:
+                    pass
                 return []
 
             # Sort IDs numerically descending (newest first)
-            sorted_eids = sorted(list(email_ids_to_check), key=lambda x: int(x) if x.isdigit() else 0, reverse=True)
+            def _get_id_num(x):
+                try:
+                    s = x.decode("ascii") if isinstance(x, bytes) else str(x)
+                    return int(s)
+                except Exception:
+                    return 0
+
+            sorted_eids = sorted(list(email_ids_to_check), key=_get_id_num, reverse=True)
             safe_print(f"[CBE IMAP] Checking {len(sorted_eids)} recent email(s) in inbox for CBE receipts...")
 
             for e_id in sorted_eids:
                 try:
-                    res_code, msg_data = mail.fetch(e_id, "(RFC822)")
+                    # Clean e_id for IMAP protocol
+                    clean_eid = e_id if isinstance(e_id, bytes) else str(e_id).encode("ascii")
+                    res_code, msg_data = mail.fetch(clean_eid, "(RFC822)")
                     if res_code != "OK" or not msg_data or not msg_data[0]:
                         continue
 
                     raw_email = msg_data[0][1]
-                    msg = email.message_from_bytes(raw_email)
+                    if not isinstance(raw_email, bytes):
+                        continue
 
-                    subject = self._decode_str(msg.get("Subject", ""))
-                    sender = self._decode_str(msg.get("From", ""))
-                    body = self._extract_body(msg)
+                    # Parse using modern policy for robust header extraction
+                    try:
+                        msg = email.message_from_bytes(raw_email, policy=email.policy.default)
+                    except Exception:
+                        msg = email.message_from_bytes(raw_email)
+
+                    subject = self._decode_header_safely(msg.get("Subject", ""))
+                    sender = self._decode_header_safely(msg.get("From", ""))
+                    body = self._extract_body_safely(msg)
 
                     # Quick pre-filter: check if email contains CBE / banking keywords
                     combined_check = f"{subject} {sender} {body[:500]}".lower()
@@ -183,7 +253,8 @@ class CBEImapService:
                     if not any(kw in combined_check for kw in cbe_keywords):
                         continue
 
-                    safe_print(f"[CBE IMAP] Scanning relevant email #{e_id.decode() if isinstance(e_id, bytes) else e_id}: Subject='{subject}' | From='{sender}'")
+                    eid_str = clean_eid.decode("ascii", errors="ignore")
+                    safe_print(f"[CBE IMAP] Scanning relevant email #{eid_str}: Subject='{subject}' | From='{sender}'")
 
                     # Parse with regex parser
                     parsed = cbe_email_parser.parse_full_cbe_payload(raw_text=body, subject=subject)
@@ -212,15 +283,18 @@ class CBEImapService:
                             })
                             # Mark email as read in Gmail
                             try:
-                                mail.store(e_id, "+FLAGS", "\\Seen")
+                                mail.store(clean_eid, "+FLAGS", "\\Seen")
                             except Exception:
                                 pass
 
                 except Exception as ex:
                     safe_print(f"[CBE IMAP] Error processing email #{e_id}: {ex}")
 
-            mail.close()
-            mail.logout()
+            try:
+                mail.close()
+                mail.logout()
+            except Exception:
+                pass
 
         except Exception as e:
             safe_print(f"[CBE IMAP] Connection/Processing notice: {e}")
@@ -256,7 +330,7 @@ class CBEImapService:
         # 1. Check Supabase transactions table
         if client:
             try:
-                query = client.table("transactions").select("*").ilike("transaction_ref", f"%{txn_ref}%").execute()
+                query = client.table("transactions").select("*").ilike("transaction_ref", f"%{clean_ref}%").execute()
                 if query.data and len(query.data) > 0:
                     matched_row = query.data[0]
                     matched_session_id = matched_row.get("session_id")
@@ -292,7 +366,7 @@ class CBEImapService:
                 safe_print(f"[CBE IMAP] Matched via single pending pricing amount match -> Session: {matched_session_id}")
 
         if not matched_session_id:
-            safe_print(f"[CBE IMAP] Txn '{txn_ref}' ({amount} ETB) parsed from email, but no pending session matched yet. Storing in Supabase registry.")
+            safe_print(f"[CBE IMAP] Txn '{clean_ref}' ({amount} ETB) parsed from email, but no pending session matched yet. Storing in Supabase registry.")
             # Record in Supabase as pre-verified so when the user submits their Txn ID later, it verifies immediately
             if client:
                 try:
@@ -300,7 +374,7 @@ class CBEImapService:
                         "session_id": "pre_verified",
                         "amount_expected": amount,
                         "amount_paid": amount,
-                        "transaction_ref": txn_ref,
+                        "transaction_ref": clean_ref,
                         "status": "approved",
                         "payer_name": payer_name,
                         "raw_webhook_payload": raw_email
@@ -314,7 +388,7 @@ class CBEImapService:
             return False
 
         # Mark paid & generate 24h Supabase Signed URL
-        updated_session = storage_service.mark_session_paid(matched_session_id, txn_ref)
+        updated_session = storage_service.mark_session_paid(matched_session_id, clean_ref)
         download_url = updated_session.get("download_url")
 
         if client:
@@ -330,7 +404,7 @@ class CBEImapService:
             except Exception as e:
                 safe_print(f"[CBE IMAP Supabase Update] Notice: {e}")
 
-        safe_print(f"[CBE IMAP] ✅ SUCCESS! Formatted thesis unlocked for session {matched_session_id} (Txn: {txn_ref}, Download: {download_url})")
+        safe_print(f"[CBE IMAP] ✅ SUCCESS! Formatted thesis unlocked for session {matched_session_id} (Txn: {clean_ref}, Download: {download_url})")
         return True
 
     async def start_background_loop(self, poll_interval: int = 20):

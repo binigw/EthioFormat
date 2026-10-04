@@ -1,8 +1,10 @@
 import pytest
+import email
 from fastapi.testclient import TestClient
 from app.main import app
 from app.config import settings
 from app.services.cbe_email_parser import CBEEmailParserService
+from app.services.cbe_imap_service import cbe_imap_service
 from app.services.pricing_engine import PricingEngine
 from app.services.storage_service import StorageService
 
@@ -53,7 +55,6 @@ def test_cbe_email_parser_standard():
     assert receipt["payer_name"] == "ABEBE BIKILA"
 
 def test_cbe_email_parser_hidden_unicode_and_ltr_marks():
-    # Includes \u200e (Left-to-Right Mark), \u200f (RLM), \u200b (ZWSP), \ufeff (BOM), \u00a0 (NBSP)
     sample_text_with_hidden_unicode = (
         "\u200eDear\u200b Customer,\u00a0"
         "Your account 1000729362799 has been \u200ecredited with \ufeffETB 50.00 on 04/10/2026.\n"
@@ -65,6 +66,25 @@ def test_cbe_email_parser_hidden_unicode_and_ltr_marks():
     assert receipt["transaction_ref"] == "FT2699881122"
     assert receipt["amount"] == 50.00
     assert "YOHANNES" in receipt["payer_name"]
+
+def test_safe_header_and_body_decoding():
+    raw_email_bytes = (
+        b"From: CBE <no-reply@cbe.com.et>\r\n"
+        b"Subject: Credit Notification \xe2\x80\x8e FT2609871234\r\n\r\n"
+        b"Dear Customer,\r\n\xe2\x80\x8eYou received ETB 50.00 from Abebe Bikila.\r\n"
+        b"Transaction Ref: \xe2\x80\x8eFT2609871234\xe2\x80\x8e\r\n"
+    )
+    msg = email.message_from_bytes(raw_email_bytes)
+    subj = cbe_imap_service._decode_header_safely(msg.get("Subject"))
+    body = cbe_imap_service._extract_body_safely(msg)
+
+    assert "\u200e" not in subj
+    assert "FT2609871234" in subj
+    assert "\u200e" not in body
+
+    parsed = CBEEmailParserService.parse_full_cbe_payload(raw_text=body, subject=subj)
+    assert parsed["transaction_ref"] == "FT2609871234"
+    assert parsed["amount"] == 50.00
 
 def test_cbe_email_parser_html_and_non_breaking_spaces():
     html_sample = """
