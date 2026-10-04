@@ -194,7 +194,7 @@ export function PaymentModal({
         {/* Header */}
         <div className="bg-gradient-to-r from-purple-950 via-indigo-950 to-purple-900 px-6 py-5 text-white flex items-center justify-between border-b border-purple-900/50">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-2xl bg-white/10 backdrop-blur-md text-amber-300 border border-white/10">
+            <div className="p-2.5 rounded-2xl bg-white/10 backdrop-blur-md text-amber-300 border border-white/10 flex-shrink-0">
               <Building className="h-6 w-6" />
             </div>
             <div>
@@ -243,13 +243,16 @@ export function PaymentModal({
 
         {/* Body Content */}
         <div className="p-6 space-y-5">
-          {/* Bank Account Details Card */}
+          {/* Bank Account Details Card with Responsive Header */}
           <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3 shadow-inner">
-            <div className="flex items-center justify-between text-xs text-purple-300">
-              <span className="font-semibold flex items-center gap-1.5">
-                <Smartphone className="h-4 w-4 text-amber-400" /> Commercial Bank of Ethiopia (CBE)
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-1.5 md:gap-2 text-xs text-purple-300">
+              <span className="font-semibold flex items-center gap-1.5 text-slate-200">
+                <Smartphone className="h-4 w-4 text-amber-400 flex-shrink-0" />
+                <span>Commercial Bank of Ethiopia (CBE)</span>
               </span>
-              <span className="text-amber-400 font-mono text-[11px]">CBEBirr / Mobile Banking</span>
+              <span className="text-amber-400 font-mono text-[11px] self-start md:self-auto bg-purple-950/70 px-2 py-0.5 rounded-md border border-purple-800/50">
+                CBEBirr / Mobile Banking
+              </span>
             </div>
 
             <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
@@ -279,7 +282,7 @@ export function PaymentModal({
             </div>
 
             {/* Account Name with uppercase Tailwind class */}
-            <div className="text-xs text-slate-300 flex items-center justify-between pt-1 border-t border-slate-800/80">
+            <div className="text-xs text-slate-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 pt-1.5 border-t border-slate-800/80">
               <span className="text-slate-400">Account Name:</span>
               <span className="font-bold text-white uppercase tracking-wider">{cbeAccName}</span>
             </div>
