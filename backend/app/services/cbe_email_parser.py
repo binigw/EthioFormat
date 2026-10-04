@@ -1,6 +1,29 @@
 import re
 import html
+import unicodedata
 from typing import Optional, Dict, Any, List
+
+# List of invisible, bidirectional, and zero-width Unicode characters commonly found in email clients & SMS
+INVISIBLE_UNICODE_CHARS = {
+    '\u200e': '',   # Left-to-Right Mark (LRM) - causes 'ascii' codec crashes
+    '\u200f': '',   # Right-to-Left Mark (RLM)
+    '\u200b': '',   # Zero-Width Space (ZWSP)
+    '\u200c': '',   # Zero-Width Non-Joiner (ZWNJ)
+    '\u200d': '',   # Zero-Width Joiner (ZWJ)
+    '\u2060': '',   # Word Joiner
+    '\ufeff': '',   # Zero-Width No-Break Space (BOM)
+    '\u00a0': ' ',  # Non-Breaking Space -> standard space
+    '\u202a': '',   # Left-to-Right Embedding
+    '\u202b': '',   # Right-to-Left Embedding
+    '\u202c': '',   # Pop Directional Formatting
+    '\u202d': '',   # Left-to-Right Override
+    '\u202e': '',   # Right-to-Left Override
+    '\u2008': ' ',  # Punctuation space
+    '\u2009': ' ',  # Thin space
+    '\u200a': ' ',  # Hair space
+    '\u202f': ' ',  # Narrow no-break space
+    '\u3000': ' ',  # Ideographic space
+}
 
 class CBEEmailParserService:
     """
@@ -27,7 +50,7 @@ class CBEEmailParserService:
             r'(?:transfer(?:red)?|deposit(?:ed)?|credit(?:ed)?|paid)\s+(?:with\s+)?(?:reference|ref|id|txn)\s*[:=\-]?\s*([A-Za-z0-9_-]{5,32})',
             re.IGNORECASE
         ),
-        # CBEBirr 10-16 numeric transaction IDs following keyword
+        # CBEBirr 10-18 numeric transaction IDs following keyword
         re.compile(r'(?:CBEBirr\s*(?:Txn|Ref|ID|Transaction)|Birr\s*Ref)\s*[:=\-]?\s*([0-9]{8,18})', re.IGNORECASE),
     ]
 
@@ -71,25 +94,38 @@ class CBEEmailParserService:
         "ETHIOFORMAT", "BANKING", "COMMERCIAL", "ETHIOPIA", "CUSTOMER"
     }
 
-    @staticmethod
-    def clean_raw_content(raw_html_or_text: str) -> str:
+    @classmethod
+    def clean_raw_content(cls, raw_html_or_text: str) -> str:
         """
-        Strips HTML tags, decodes HTML entities (&nbsp;, &amp;, etc.),
-        and normalizes whitespace for reliable regex tokenization.
+        Safely strips invisible Unicode marks (\u200e, \u200f, \ufeff, etc.),
+        HTML tags, decodes HTML entities (&nbsp;, &amp;), and normalizes whitespace
+        while fully preserving Amharic and Latin characters.
         """
         if not raw_html_or_text:
             return ""
 
-        # Decode HTML entities
-        text = html.unescape(raw_html_or_text)
+        # 1. Strip invisible / directional Unicode characters
+        text = str(raw_html_or_text)
+        for char, replacement in INVISIBLE_UNICODE_CHARS.items():
+            if char in text:
+                text = text.replace(char, replacement)
 
-        # Replace non-breaking spaces and special whitespace
-        text = text.replace('\xa0', ' ').replace('&nbsp;', ' ')
+        # 2. Decode HTML entities (&nbsp;, &amp;, etc.)
+        try:
+            text = html.unescape(text)
+        except Exception:
+            pass
 
-        # Strip HTML tags
+        # 3. Strip HTML tags (<...>)
         text = re.sub(r'<[^>]+>', ' ', text)
 
-        # Normalize redundant spaces while preserving lines
+        # 4. Normalize Unicode compatibility characters (NFKC)
+        try:
+            text = unicodedata.normalize('NFKC', text)
+        except Exception:
+            pass
+
+        # 5. Clean up redundant spaces and line breaks
         lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in text.splitlines()]
         return "\n".join(line for line in lines if line)
 
@@ -112,7 +148,6 @@ class CBEEmailParserService:
         for pattern in cls.TXN_PATTERNS:
             for match in pattern.finditer(combined_text):
                 candidate = match.group(1).strip()
-                # Normalize candidate
                 clean_candidate = re.sub(r'[^A-Za-z0-9_-]', '', candidate)
                 if len(clean_candidate) >= 5 and clean_candidate.upper() not in cls.IGNORED_WORDS:
                     extracted_txn = clean_candidate.upper()

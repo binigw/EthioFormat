@@ -1,4 +1,6 @@
 import os
+import sys
+import io
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -8,6 +10,20 @@ from fastapi.responses import FileResponse
 from app.config import settings
 from app.routers import presets, preview, payment
 from app.services.cbe_imap_service import cbe_imap_service
+
+# Ensure standard output and error streams handle UTF-8 and unicode seamlessly
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+elif hasattr(sys.stdout, 'buffer'):
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

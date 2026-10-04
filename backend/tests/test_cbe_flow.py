@@ -52,6 +52,20 @@ def test_cbe_email_parser_standard():
     assert receipt["amount"] == 65.00
     assert receipt["payer_name"] == "ABEBE BIKILA"
 
+def test_cbe_email_parser_hidden_unicode_and_ltr_marks():
+    # Includes \u200e (Left-to-Right Mark), \u200f (RLM), \u200b (ZWSP), \ufeff (BOM), \u00a0 (NBSP)
+    sample_text_with_hidden_unicode = (
+        "\u200eDear\u200b Customer,\u00a0"
+        "Your account 1000729362799 has been \u200ecredited with \ufeffETB 50.00 on 04/10/2026.\n"
+        "Transaction ID:\u200e FT2699881122\u200e\n"
+        "Sender: \u200eYOHANNES\u00a0WONDIMAGEGNEHU\u200e\n"
+        "Thank you for banking with CBE."
+    )
+    receipt = CBEEmailParserService.parse_full_cbe_payload(sample_text_with_hidden_unicode)
+    assert receipt["transaction_ref"] == "FT2699881122"
+    assert receipt["amount"] == 50.00
+    assert "YOHANNES" in receipt["payer_name"]
+
 def test_cbe_email_parser_html_and_non_breaking_spaces():
     html_sample = """
     <div>

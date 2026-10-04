@@ -1,3 +1,4 @@
+import sys
 import imaplib
 import email
 from email.header import decode_header
@@ -9,6 +10,19 @@ from typing import List, Dict, Any, Optional
 from app.config import settings
 from app.services.cbe_email_parser import cbe_email_parser
 from app.services.storage_service import storage_service
+
+def safe_print(msg: Any):
+    """
+    Safely prints messages to stdout without crashing on ascii-only terminal streams.
+    """
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        try:
+            cleaned = str(msg).encode('ascii', errors='replace').decode('ascii')
+            print(cleaned)
+        except Exception:
+            pass
 
 class CBEImapService:
     """
@@ -42,19 +56,39 @@ class CBEImapService:
         if not header_val:
             return ""
         try:
+            if isinstance(header_val, bytes):
+                header_val = header_val.decode("utf-8", errors="ignore")
             decoded_fragments = decode_header(header_val)
             out = []
             for frag, enc in decoded_fragments:
                 if isinstance(frag, bytes):
-                    out.append(frag.decode(enc or "utf-8", errors="ignore"))
+                    charset = enc or "utf-8"
+                    try:
+                        out.append(frag.decode(charset, errors="ignore"))
+                    except (LookupError, UnicodeDecodeError):
+                        out.append(frag.decode("utf-8", errors="ignore"))
                 else:
                     out.append(str(frag))
-            return "".join(out)
-        except Exception:
-            return str(header_val)
+            result = "".join(out)
+            return cbe_email_parser.clean_raw_content(result)
+        except Exception as e:
+            return cbe_email_parser.clean_raw_content(str(header_val))
 
     def _extract_body(self, msg: email.message.Message) -> str:
         body_parts = []
+
+        def _decode_bytes(b_data: bytes, enc: Optional[str]) -> str:
+            if not b_data:
+                return ""
+            for charset in [enc, "utf-8", "latin1", "windows-1252", "iso-8859-1"]:
+                if not charset:
+                    continue
+                try:
+                    return b_data.decode(charset, errors="replace")
+                except (LookupError, UnicodeDecodeError):
+                    continue
+            return b_data.decode("utf-8", errors="ignore")
+
         if msg.is_multipart():
             for part in msg.walk():
                 content_type = part.get_content_type()
@@ -62,22 +96,23 @@ class CBEImapService:
                 if "attachment" not in content_disposition:
                     if content_type in ["text/plain", "text/html"]:
                         payload = part.get_payload(decode=True)
-                        if payload:
-                            charset = part.get_content_charset() or "utf-8"
-                            try:
-                                body_parts.append(payload.decode(charset, errors="ignore"))
-                            except Exception:
-                                body_parts.append(payload.decode("utf-8", errors="ignore"))
+                        if isinstance(payload, bytes):
+                            charset = part.get_content_charset()
+                            text = _decode_bytes(payload, charset)
+                            body_parts.append(text)
+                        elif isinstance(payload, str):
+                            body_parts.append(payload)
         else:
             payload = msg.get_payload(decode=True)
-            if payload:
-                charset = msg.get_content_charset() or "utf-8"
-                try:
-                    body_parts.append(payload.decode(charset, errors="ignore"))
-                except Exception:
-                    body_parts.append(payload.decode("utf-8", errors="ignore"))
+            if isinstance(payload, bytes):
+                charset = msg.get_content_charset()
+                text = _decode_bytes(payload, charset)
+                body_parts.append(text)
+            elif isinstance(payload, str):
+                body_parts.append(payload)
 
-        return "\n".join(body_parts)
+        raw_joined = "\n".join(body_parts)
+        return cbe_email_parser.clean_raw_content(raw_joined)
 
     def check_gmail_receipts(self) -> List[Dict[str, Any]]:
         """
@@ -87,7 +122,7 @@ class CBEImapService:
         if not self.is_configured():
             now = time.time()
             if now - self._last_log_time > 60:
-                print(
+                safe_print(
                     "[CBE IMAP] ⚠️ IMAP Not Configured: GMAIL_IMAP_USER or GMAIL_IMAP_PASSWORD environment variable is empty. "
                     "Make sure to set GMAIL_IMAP_USER and GMAIL_IMAP_PASSWORD in Render Environment variables."
                 )
@@ -127,7 +162,7 @@ class CBEImapService:
 
             # Sort IDs numerically descending (newest first)
             sorted_eids = sorted(list(email_ids_to_check), key=lambda x: int(x) if x.isdigit() else 0, reverse=True)
-            print(f"[CBE IMAP] Checking {len(sorted_eids)} recent email(s) in inbox for CBE receipts...")
+            safe_print(f"[CBE IMAP] Checking {len(sorted_eids)} recent email(s) in inbox for CBE receipts...")
 
             for e_id in sorted_eids:
                 try:
@@ -148,7 +183,7 @@ class CBEImapService:
                     if not any(kw in combined_check for kw in cbe_keywords):
                         continue
 
-                    print(f"[CBE IMAP] Scanning relevant email #{e_id.decode() if isinstance(e_id, bytes) else e_id}: Subject='{subject}' | From='{sender}'")
+                    safe_print(f"[CBE IMAP] Scanning relevant email #{e_id.decode() if isinstance(e_id, bytes) else e_id}: Subject='{subject}' | From='{sender}'")
 
                     # Parse with regex parser
                     parsed = cbe_email_parser.parse_full_cbe_payload(raw_text=body, subject=subject)
@@ -156,7 +191,7 @@ class CBEImapService:
                     amount = parsed.get("amount")
                     payer_name = parsed.get("payer_name")
 
-                    print(f"[CBE IMAP] Extracted metadata from email -> Txn ID: '{txn_ref}', Amount: {amount} ETB, Payer: '{payer_name}'")
+                    safe_print(f"[CBE IMAP] Extracted metadata from email -> Txn ID: '{txn_ref}', Amount: {amount} ETB, Payer: '{payer_name}'")
 
                     if txn_ref and amount and amount > 0:
                         txn_ref_upper = txn_ref.strip().upper()
@@ -182,13 +217,13 @@ class CBEImapService:
                                 pass
 
                 except Exception as ex:
-                    print(f"[CBE IMAP] Error processing email #{e_id}: {ex}")
+                    safe_print(f"[CBE IMAP] Error processing email #{e_id}: {ex}")
 
             mail.close()
             mail.logout()
 
         except Exception as e:
-            print(f"[CBE IMAP] Connection/Authentication notice: {e}")
+            safe_print(f"[CBE IMAP] Connection/Processing notice: {e}")
             if mail:
                 try:
                     mail.logout()
@@ -212,7 +247,7 @@ class CBEImapService:
         4. Pricing amount match fallback
         """
         clean_ref = re.sub(r'[^A-Z0-9]', '', txn_ref.upper())
-        print(f"[CBE IMAP] Attempting to match Txn '{txn_ref}' (Normalized: '{clean_ref}', Amount: {amount} ETB)...")
+        safe_print(f"[CBE IMAP] Attempting to match Txn '{txn_ref}' (Normalized: '{clean_ref}', Amount: {amount} ETB)...")
 
         client = storage_service.supabase_client
         matched_session_id: Optional[str] = None
@@ -226,9 +261,9 @@ class CBEImapService:
                     matched_row = query.data[0]
                     matched_session_id = matched_row.get("session_id")
                     expected_amount = float(matched_row.get("amount_expected", 50.0))
-                    print(f"[CBE IMAP] Matched via Supabase transactions table -> Session: {matched_session_id}")
+                    safe_print(f"[CBE IMAP] Matched via Supabase transactions table -> Session: {matched_session_id}")
             except Exception as e:
-                print(f"[CBE IMAP Supabase Query] Notice: {e}")
+                safe_print(f"[CBE IMAP Supabase Query] Notice: {e}")
 
         # 2. Check Disk & Memory Sessions for matching submitted Txn ID
         if not matched_session_id:
@@ -238,7 +273,7 @@ class CBEImapService:
                 sess = storage_service.get_session(matched_sid)
                 pricing = sess.get("pricing", {}) if sess else {}
                 expected_amount = float(pricing.get("total_fee", 50.0))
-                print(f"[CBE IMAP] Matched via Disk/Memory Session find_session_by_txn_ref -> Session: {matched_session_id}")
+                safe_print(f"[CBE IMAP] Matched via Disk/Memory Session find_session_by_txn_ref -> Session: {matched_session_id}")
 
         # 3. Fallback: Check all active unpaid sessions by exact pricing amount if only 1 pending
         if not matched_session_id:
@@ -254,10 +289,10 @@ class CBEImapService:
             if len(unpaid_matching) == 1:
                 matched_session_id = unpaid_matching[0][0]
                 expected_amount = unpaid_matching[0][1]
-                print(f"[CBE IMAP] Matched via single pending pricing amount match -> Session: {matched_session_id}")
+                safe_print(f"[CBE IMAP] Matched via single pending pricing amount match -> Session: {matched_session_id}")
 
         if not matched_session_id:
-            print(f"[CBE IMAP] Txn '{txn_ref}' ({amount} ETB) parsed from email, but no pending session matched yet. Storing in Supabase registry.")
+            safe_print(f"[CBE IMAP] Txn '{txn_ref}' ({amount} ETB) parsed from email, but no pending session matched yet. Storing in Supabase registry.")
             # Record in Supabase as pre-verified so when the user submits their Txn ID later, it verifies immediately
             if client:
                 try:
@@ -271,11 +306,11 @@ class CBEImapService:
                         "raw_webhook_payload": raw_email
                     }, on_conflict="transaction_ref").execute()
                 except Exception as e:
-                    print(f"[CBE IMAP Supabase Record] Notice: {e}")
+                    safe_print(f"[CBE IMAP Supabase Record] Notice: {e}")
             return False
 
         if amount < expected_amount:
-            print(f"[CBE IMAP] ❌ Underpayment for session {matched_session_id}: Expected {expected_amount} ETB, got {amount} ETB")
+            safe_print(f"[CBE IMAP] ❌ Underpayment for session {matched_session_id}: Expected {expected_amount} ETB, got {amount} ETB")
             return False
 
         # Mark paid & generate 24h Supabase Signed URL
@@ -293,9 +328,9 @@ class CBEImapService:
                     "raw_webhook_payload": raw_email
                 }).eq("session_id", matched_session_id).execute()
             except Exception as e:
-                print(f"[CBE IMAP Supabase Update] Notice: {e}")
+                safe_print(f"[CBE IMAP Supabase Update] Notice: {e}")
 
-        print(f"[CBE IMAP] ✅ SUCCESS! Formatted thesis unlocked for session {matched_session_id} (Txn: {txn_ref}, Download: {download_url})")
+        safe_print(f"[CBE IMAP] ✅ SUCCESS! Formatted thesis unlocked for session {matched_session_id} (Txn: {txn_ref}, Download: {download_url})")
         return True
 
     async def start_background_loop(self, poll_interval: int = 20):
@@ -307,7 +342,7 @@ class CBEImapService:
 
         self._is_running = True
         status_info = self.get_status_info()
-        print(f"[CBE IMAP Background Worker] Initialized (Configured: {status_info['configured']}, Server: {status_info['server']}:{status_info['port']}, User: {status_info['user']}, Interval: {poll_interval}s)")
+        safe_print(f"[CBE IMAP Background Worker] Initialized (Configured: {status_info['configured']}, Server: {status_info['server']}:{status_info['port']}, User: {status_info['user']}, Interval: {poll_interval}s)")
 
         while self._is_running:
             try:
@@ -317,15 +352,15 @@ class CBEImapService:
                 else:
                     now = time.time()
                     if now - self._last_log_time > 120:
-                        print(f"[CBE IMAP Background Worker] Idle: Gmail IMAP not configured. Waiting for GMAIL_IMAP_USER/GMAIL_IMAP_PASSWORD or Webhooks.")
+                        safe_print(f"[CBE IMAP Background Worker] Idle: Gmail IMAP not configured. Waiting for GMAIL_IMAP_USER/GMAIL_IMAP_PASSWORD or Webhooks.")
                         self._last_log_time = now
             except Exception as e:
-                print(f"[CBE IMAP Background Loop Error] {e}")
+                safe_print(f"[CBE IMAP Background Loop Error] {e}")
 
             await asyncio.sleep(poll_interval)
 
     def stop_background_loop(self):
         self._is_running = False
-        print("[CBE IMAP Background Worker] Stopped.")
+        safe_print("[CBE IMAP Background Worker] Stopped.")
 
 cbe_imap_service = CBEImapService()
