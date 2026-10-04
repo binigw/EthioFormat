@@ -203,8 +203,8 @@ export function PaymentModal({
 
   if (!isOpen) return null;
 
-  const cbeAccNumber = initData?.cbe_account_number || cbeAccountNumber || "1000123456789";
-  const cbeAccName = initData?.cbe_account_name || cbeAccountName || "EthioFormat / Thesis Automation Services";
+  const cbeAccNumber = initData?.cbe_account_number || cbeAccountNumber || "1000659424936";
+  const cbeAccName = initData?.cbe_account_name || cbeAccountName || "BINIAM KEBEDE AMADE";
   const exactAmount = initData?.amount_expected ?? pricing.total_fee;
 
   return (

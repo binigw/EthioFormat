@@ -6,6 +6,14 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn -w 2 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT"
     envVars:
+      - key: PYTHONIOENCODING
+        value: "utf-8"
+      - key: PYTHONUTF8
+        value: "1"
+      - key: LANG
+        value: "C.UTF-8"
+      - key: LC_ALL
+        value: "C.UTF-8"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
@@ -13,9 +21,9 @@ services:
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: CBE_ACCOUNT_NUMBER
-        value: "1000123456789"
+        value: "1000659424936"
       - key: CBE_ACCOUNT_NAME
-        value: "EthioFormat / Thesis Automation Services"
+        value: "BINIAM KEBEDE AMADE"
       - key: GMAIL_IMAP_SERVER
         value: "imap.gmail.com"
       - key: GMAIL_IMAP_PORT

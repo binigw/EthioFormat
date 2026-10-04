@@ -45,8 +45,8 @@ export async function fetchCBEDetails(): Promise<{ cbe_account_number: string; c
     }
   } catch {}
   return {
-    cbe_account_number: "1000123456789",
-    cbe_account_name: "EthioFormat / Thesis Automation Services",
+    cbe_account_number: "1000659424936",
+    cbe_account_name: "BINIAM KEBEDE AMADE",
   };
 }
 

@@ -124,7 +124,7 @@ Selecting any Ethiopian University preset automatically enforces the **Standard 
        |
        |  6. Renders Pages 1-3 + Blurred Paywall Overlay for remaining (N-3) pages
        |  7. User clicks "Pay [Price] ETB via CBE Birr / Bank Transfer"
-       |  8. User transfers money via CBE Mobile Banking / CBE Birr to Account 1000123456789
+       |  8. User transfers money via CBE Mobile Banking / CBE Birr to Account 1000659424936 (BINIAM KEBEDE AMADE)
        |  9. User submits their CBE Transaction ID (e.g. FT260987ABCD) -> /api/payment/submit-cbe-txn
        v
 [ FastAPI IMAP Background Worker / Webhook Receiver ]

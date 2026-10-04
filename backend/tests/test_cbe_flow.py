@@ -44,7 +44,7 @@ def test_pricing_calculation():
 def test_cbe_email_parser_standard():
     sample_text = """
     Dear Customer,
-    Your account 1000123456789 has been credited with ETB 65.00 on 04/10/2026.
+    Your account 1000659424936 has been credited with ETB 65.00 on 04/10/2026.
     Transaction ID: FT2609871234
     Sender: ABEBE BIKILA
     Thank you for banking with CBE.

@@ -47,7 +47,7 @@ def test_preview_and_cbe_flow():
     webhook_res = client.post("/api/cbe-email-webhook", json={
         "subject": "CBE Transaction Alert",
         "sender": "no-reply@cbe.com.et",
-        "body": f"Credit Notification: ETB {preview_data['pricing']['total_fee']} credited to 1000123456789. Ref: {txn_id} from Abebe Bikila"
+        "body": f"Credit Notification: ETB {preview_data['pricing']['total_fee']} credited to 1000659424936. Ref: {txn_id} from Abebe Bikila"
     })
     assert webhook_res.status_code == 200
     assert webhook_res.json()["status"] == "success"

@@ -20,9 +20,9 @@ services:
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: CBE_ACCOUNT_NUMBER
-        value: "1000123456789"
+        value: "1000659424936"
       - key: CBE_ACCOUNT_NAME
-        value: "EthioFormat / Thesis Automation Services"
+        value: "BINIAM KEBEDE AMADE"
       - key: GMAIL_IMAP_SERVER
         value: "imap.gmail.com"
       - key: GMAIL_IMAP_PORT

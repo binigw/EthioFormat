@@ -18,8 +18,8 @@ CREATE TABLE IF NOT EXISTS public.transactions (
     amount_paid NUMERIC(10, 2) DEFAULT NULL,
     transaction_ref TEXT UNIQUE NOT NULL, -- CBE Transaction ID (e.g. FT260987ABCD or TXN123456)
     status transaction_status NOT NULL DEFAULT 'pending',
-    cbe_account_number TEXT DEFAULT '1000123456789',
-    cbe_account_name TEXT DEFAULT 'EthioFormat / Thesis Automation Services',
+    cbe_account_number TEXT DEFAULT '1000659424936',
+    cbe_account_name TEXT DEFAULT 'BINIAM KEBEDE AMADE',
     payer_email TEXT,
     payer_name TEXT,
     payer_phone TEXT,
