@@ -1,10 +1,11 @@
 import time
 import re
+import json
 import asyncio
 import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, status, Header, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, Header, BackgroundTasks, Request
 from fastapi.responses import FileResponse
 from app.models.payment import (
     InitiateCBEPaymentRequest,
@@ -437,6 +438,64 @@ async def cbe_email_webhook(
             message=f"Error processing webhook: {str(ex)}",
             transaction_ref=payload.transaction_id,
             amount_detected=payload.amount
+        )
+
+@router.post("/payment/sms-webhook", response_model=CBEWebhookResponse)
+@router.post("/sms-webhook", response_model=CBEWebhookResponse)
+async def sms_webhook(
+    request: Request
+):
+    """
+    Direct Automated SMS Forwarder Gateway:
+    Receives incoming bank SMS (CBE, CBE Birr, EBIRR, COOPay, Telebirr) forwarded automatically
+    from Android SMS Forwarder apps (SMS Forwarder, MacroDroid, Tasker, IFTTT, Twilio).
+    Extracts all Transaction IDs, Amounts, and automatically unlocks the student's thesis in 0.1s.
+    """
+    try:
+        body_bytes = await request.body()
+        raw_text = body_bytes.decode("utf-8", errors="ignore")
+        
+        # Check if JSON
+        parsed_json = {}
+        try:
+            parsed_json = json.loads(raw_text)
+        except Exception:
+            pass
+
+        sms_content = ""
+        subject = "Bank SMS Forward"
+        from_phone = ""
+
+        if isinstance(parsed_json, dict) and len(parsed_json) > 0:
+            sms_content = (
+                parsed_json.get("content") or
+                parsed_json.get("message") or
+                parsed_json.get("text") or
+                parsed_json.get("body") or
+                parsed_json.get("sms") or
+                raw_text
+            )
+            from_phone = parsed_json.get("from") or parsed_json.get("sender") or parsed_json.get("phone") or ""
+        else:
+            sms_content = raw_text
+
+        safe_print(f"[SMS Webhook] Received SMS forward! Length: {len(sms_content)} chars | From: '{from_phone}'")
+        
+        # Reuse robust CBE/EBIRR parser
+        return await cbe_email_webhook(
+            CBEWebhookPayload(
+                subject=subject,
+                from_email=from_phone,
+                body=sms_content,
+                raw_content=sms_content
+            )
+        )
+
+    except Exception as ex:
+        safe_print(f"[SMS Webhook Exception] {ex}")
+        return CBEWebhookResponse(
+            status="error",
+            message=f"Error processing SMS webhook: {str(ex)}"
         )
 
 @router.get("/payment/status/{session_id}", response_model=CheckTransactionStatusResponse)
