@@ -35,21 +35,25 @@ _last_imap_check_time: Dict[str, float] = {}
 def is_valid_ethiopian_bank_ref(ref: str) -> bool:
     """
     Validates official Ethiopian banking transaction references:
-    - CBE Mobile Banking & Core Banking FT number (e.g. FT2609384729)
+    - CBE Mobile Banking & Core Banking FT number (e.g. FT2609384729, FT24019283748)
     - EBIRR / COOPay-EBIRR / CBEBirr / Telebirr 8-18 digit numeric ID (e.g. 2799024023, 2799980701, 894729104)
-    - Alphanumeric transaction codes (TXN..., CBE..., TT..., EP..., TR...)
+    - Alphanumeric transaction codes (TXN..., CBE..., TT..., EP..., TR..., COOP...)
     """
-    r = ref.strip().upper()
-    if r in ('1000659424936', 'BINIAM', 'AMADE', 'KEBEDE', 'TEST', 'SAMPLE', '123456', 'CHECK', 'REF', 'NONE', 'NULL'):
+    if not ref:
         return False
-    # CBE FT number (e.g. FT2609384729)
-    if re.match(r'^FT[0-9]{6,22}[A-Z0-9]*$', r):
+    r = re.sub(r'[^A-Z0-9]', '', str(ref).upper())
+    if len(r) < 6:
+        return False
+    if r in ('1000659424936', 'BINIAM', 'AMADE', 'KEBEDE', 'TESTTEST', 'SAMPLESAMPLE', '12345678', 'CHECKREF', 'NONENONE', 'NULLNULL'):
+        return False
+    # CBE FT number (e.g. FT2609384729, FT241029384728)
+    if re.match(r'^FT[0-9A-Z]{6,24}$', r):
         return True
     # EBIRR / COOPay / CBEBirr / Telebirr numeric ID (e.g. 2799024023, 2799980701, 894729104)
     if re.match(r'^[0-9]{8,18}$', r):
         return True
-    # Standard transaction codes (e.g. TXN10293848, CBE99882211, TT84738291, EP8492019)
-    if re.match(r'^(?:TXN|CBE|TT|EP|TR|REF)[0-9A-Z]{5,24}$', r):
+    # Standard transaction codes (e.g. TXN10293848, CBE99882211, TT84738291, EP8492019, COOP8472910)
+    if re.match(r'^(?:TXN|CBE|TT|EP|TR|REF|COOP)[0-9A-Z]{4,24}$', r):
         return True
     return False
 

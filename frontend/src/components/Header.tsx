@@ -17,7 +17,7 @@ export function Header() {
                 Ethio<span className="text-emerald-400">Format</span>
               </span>
               <span className="rounded-full bg-emerald-950/60 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 border border-emerald-800">
-                ኢትዮ-ፎርማት v2.0
+                ኢትዮ-ፎርማት
               </span>
             </div>
             <p className="text-[11px] text-slate-400">Automated Ethiopian Thesis Formatter</p>
