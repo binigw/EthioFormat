@@ -148,10 +148,10 @@ export function PaymentModal({
 
           await new Promise((r) => setTimeout(r, 600));
           onPaymentSuccess(res);
-        } else if (res.status === "failed") {
+        } else if (res.status === "failed" || res.status === "rejected") {
           if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
           setIsPolling(false);
-          setErrorMessage(res.message || "Payment verification failed. Please check the amount transferred.");
+          setErrorMessage(res.message || "Payment verification failed. Please check your transaction reference.");
         }
       } catch {
         // Continue polling silently

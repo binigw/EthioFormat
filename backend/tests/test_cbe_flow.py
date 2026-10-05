@@ -240,3 +240,57 @@ def test_download_dynamic_regeneration_on_missing_formatted_file():
     assert "application/vnd.openxmlformats-officedocument" in res.headers["content-type"]
     assert formatted_file.exists()
 
+def test_anti_replay_duplicate_transaction_prevention():
+    """
+    Security Test:
+    Verifies that a CBE/EBIRR transaction ID cannot be reused across multiple sessions.
+    Once claimed for Session 1, submitting it for Session 2 must be strictly rejected with HTTP 400.
+    """
+    from app.services.storage_service import storage_service
+
+    sess_1 = "sess_replay_test_001"
+    sess_2 = "sess_replay_test_002"
+    shared_txn = "FT2699884411"
+
+    # Register both sessions
+    storage_service.register_session(sess_1, {
+        "session_id": sess_1,
+        "original_filename": "Student1_Thesis.docx",
+        "pricing": {"base_fee": 50.0, "incremental_fee": 0.0, "total_fee": 50.0, "currency": "ETB"},
+        "is_paid": False
+    })
+
+    storage_service.register_session(sess_2, {
+        "session_id": sess_2,
+        "original_filename": "Student2_Thesis.docx",
+        "pricing": {"base_fee": 50.0, "incremental_fee": 0.0, "total_fee": 50.0, "currency": "ETB"},
+        "is_paid": False
+    })
+
+    # 1. First submission on Session 1 -> Must succeed and unlock Session 1
+    res1 = client.post("/api/payment/submit-cbe-txn", json={
+        "session_id": sess_1,
+        "transaction_ref": shared_txn,
+        "payer_name": "Abebe Kebede"
+    })
+    assert res1.status_code == 200
+    data1 = res1.json()
+    assert data1["status"] == "approved"
+    assert data1.get("download_url") is not None
+
+    # 2. Second submission with the SAME transaction on Session 2 -> MUST BE REJECTED with 400!
+    res2 = client.post("/api/payment/submit-cbe-txn", json={
+        "session_id": sess_2,
+        "transaction_ref": shared_txn,
+        "payer_name": "Almaz Bekele"
+    })
+    assert res2.status_code == 400
+    assert "ቀደም ሲል ለሌላ ሰነድ" in res2.json()["detail"] or "already been redeemed" in res2.json()["detail"]
+
+    # 3. Status polling for Session 2 must NOT approve Session 2 with the reused transaction
+    res2_status = client.get(f"/api/payment/status/{sess_2}")
+    data2_status = res2_status.json()
+    assert data2_status["status"] in ("pending", "rejected")
+    assert data2_status["verified"] is False
+
+

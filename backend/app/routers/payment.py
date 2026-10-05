@@ -166,14 +166,30 @@ async def submit_cbe_transaction(
     """
     Called by user from frontend to associate their entered CBE Transaction ID
     with the current session and trigger an immediate Gmail IMAP / webhook check.
+    Enforces strict Anti-Replay / Double-Spending protection so each transfer is 1-time use.
     """
-    clean_ref = payload.transaction_ref.strip().upper()
+    if not payload.transaction_ref or not payload.transaction_ref.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transaction ID is required."
+        )
+
+    clean_ref = re.sub(r'[^A-Z0-9]', '', payload.transaction_ref.upper())
     safe_print(f"[CBE Submit Txn] User submitted Txn ID: '{clean_ref}' for Session: '{payload.session_id}' (Payer: {payload.payer_name})")
 
     if not clean_ref or len(clean_ref) < 3:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Please provide a valid CBE Transaction ID (e.g., FT2609384729 or 10-digit code)."
+        )
+
+    # 1. ANTI-REPLAY DEFENSE: Verify that this transaction ID was not already used/claimed by another document session!
+    is_claimed, claimed_sid = storage_service.is_transaction_claimed(clean_ref, current_session_id=payload.session_id)
+    if is_claimed:
+        safe_print(f"[Anti-Replay Security] 🚫 Replay detected: Txn '{clean_ref}' was ALREADY CLAIMED by session '{claimed_sid}'! Rejecting duplicate submission for session '{payload.session_id}'.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ይህ የትራንስፈር መለያ (Transaction ID) ቀደም ሲል ለሌላ ሰነድ ክፍያ ተፈጽሞበታል። አንድ የባንክ ክፍያ ለአንድ ሰነድ ብቻ ያገለግላል። እባክዎ አዲስ ክፍያ ይፈጽሙ። (This Transaction ID has already been redeemed for another thesis document. Each bank transfer is strictly one-time use.)"
         )
 
     session = storage_service.get_session(payload.session_id)
@@ -190,7 +206,7 @@ async def submit_cbe_transaction(
         }
         storage_service.register_session(payload.session_id, session)
 
-    # 1. Update session on disk with submitted transaction ID immediately
+    # 2. Update session on disk with submitted transaction ID immediately
     storage_service.update_session_transaction(
         session_id=payload.session_id,
         transaction_ref=clean_ref,
@@ -205,23 +221,30 @@ async def submit_cbe_transaction(
     existing_status = "pending"
     download_url = None
 
-    # 2. Check if pre-verified in Storage Service
+    # 3. Check if pre-verified in Storage Service
     preverified = storage_service.get_preverified_transaction(clean_ref)
     if preverified:
         safe_print(f"[CBE Submit Txn] Instant match! Txn '{clean_ref}' was pre-verified in storage: {preverified}")
         existing_status = "approved"
 
-    # 3. Check if this Txn ID was already pre-verified in Supabase
+    # 4. Check if this Txn ID was already pre-verified in Supabase
     if client and existing_status != "approved":
         try:
             query = client.table("transactions").select("*").ilike("transaction_ref", f"%{clean_ref}%").execute()
             if query.data and len(query.data) > 0:
-                rec = query.data[0]
-                rec_status = rec.get("status", "pending")
-                if rec_status == "approved":
-                    existing_status = "approved"
-                    download_url = rec.get("download_url")
-                    safe_print(f"[CBE Submit Txn] Found approved record in Supabase for '{clean_ref}'")
+                for rec in query.data:
+                    rec_status = rec.get("status", "pending")
+                    rec_sid = rec.get("session_id")
+                    if rec_status == "approved" and rec_sid and rec_sid != payload.session_id:
+                        safe_print(f"[Anti-Replay] Supabase record shows '{clean_ref}' claimed by '{rec_sid}'!")
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="ይህ የትራንስፈር መለያ (Transaction ID) ቀደም ሲል ለሌላ ሰነድ ክፍያ ተፈጽሞበታል። እባክዎ አዲስ ክፍያ ይፈጽሙ።"
+                        )
+                    elif rec_status == "approved" and (not rec_sid or rec_sid == payload.session_id):
+                        existing_status = "approved"
+                        download_url = rec.get("download_url")
+                        safe_print(f"[CBE Submit Txn] Found approved record in Supabase for '{clean_ref}'")
             else:
                 client.table("transactions").upsert({
                     "session_id": payload.session_id,
@@ -231,6 +254,8 @@ async def submit_cbe_transaction(
                     "payer_name": payload.payer_name,
                     "payer_phone": payload.payer_phone
                 }, on_conflict="session_id").execute()
+        except HTTPException:
+            raise
         except Exception as e:
             safe_print(f"[Supabase Transactions] Submit notice: {e}")
 
@@ -239,7 +264,7 @@ async def submit_cbe_transaction(
         existing_status = "approved"
         download_url = _local_transactions_db[clean_ref].get("download_url")
 
-    # 4. If approved or valid Ethiopian banking reference, mark session paid and return download URL immediately
+    # 5. If approved or valid Ethiopian banking reference, mark session paid and return download URL immediately
     is_valid_bank_ref = is_valid_ethiopian_bank_ref(clean_ref)
 
     if existing_status == "approved" or session.get("is_paid", False) or is_valid_bank_ref:
@@ -369,6 +394,19 @@ async def cbe_email_webhook(
 
         final_txn_ref = extracted_txn.strip().upper() if extracted_txn else f"TXN-UNKWN-{int(time.time())}"
         final_amount = float(extracted_amount) if extracted_amount else 50.0
+
+        # Check if this transaction ID was already consumed/claimed by another session
+        is_claimed, claimed_sid = storage_service.is_transaction_claimed(final_txn_ref)
+        if is_claimed:
+            safe_print(f"[CBE Webhook] Txn '{final_txn_ref}' was already claimed by session '{claimed_sid}'. Skipping duplicate match.")
+            return CBEWebhookResponse(
+                status="success",
+                message=f"CBE transaction {final_txn_ref} is already claimed by session {claimed_sid}.",
+                transaction_ref=final_txn_ref,
+                amount_detected=final_amount,
+                matched_session_id=claimed_sid,
+                download_url=None
+            )
 
         # Store all references in preverified cache
         for ref_cand in all_extracted_refs:
@@ -598,16 +636,27 @@ async def check_transaction_status(session_id: str):
 
     submitted_ref = (session.get("transaction_ref") or session.get("tx_ref") or "") if session else ""
 
-    # 2. Check preverified storage or valid banking reference
+    # 2. Check if submitted reference was already claimed by another session
     if submitted_ref:
-        pre = storage_service.get_preverified_transaction(submitted_ref)
-        if pre or is_valid_ethiopian_bank_ref(submitted_ref):
-            updated = storage_service.mark_session_paid(session_id, submitted_ref)
+        clean_sub_ref = re.sub(r'[^A-Z0-9]', '', submitted_ref.upper())
+        is_claimed, claimed_sid = storage_service.is_transaction_claimed(clean_sub_ref, current_session_id=session_id)
+        if is_claimed:
+            return CheckTransactionStatusResponse(
+                status="rejected",
+                session_id=session_id,
+                amount_expected=amount_expected,
+                verified=False,
+                message="ይህ የትራንስፈር መለያ (Transaction ID) ቀደም ሲል ለሌላ ሰነድ ክፍያ ተፈጽሞበታል። እባክዎ አዲስ ክፍያ ይፈጽሙ። (This Transaction ID has already been redeemed for another document.)"
+            )
+
+        pre = storage_service.get_preverified_transaction(clean_sub_ref)
+        if pre or is_valid_ethiopian_bank_ref(clean_sub_ref):
+            updated = storage_service.mark_session_paid(session_id, clean_sub_ref)
             amount_val = float(pre.get("amount", amount_expected)) if pre else amount_expected
             return CheckTransactionStatusResponse(
                 status="approved",
                 session_id=session_id,
-                transaction_ref=submitted_ref,
+                transaction_ref=clean_sub_ref,
                 amount_expected=amount_expected,
                 amount_paid=amount_val,
                 verified=True,

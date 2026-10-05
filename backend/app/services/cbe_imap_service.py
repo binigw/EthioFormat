@@ -373,6 +373,12 @@ class CBEImapService:
         clean_ref = re.sub(r'[^A-Z0-9]', '', txn_ref.upper())
         safe_print(f"[CBE IMAP] Matching Txn '{txn_ref}' (Normalized: '{clean_ref}', Amount: {amount} ETB)...")
 
+        # 0. Anti-Replay Security Check: Ensure transaction ID is not already consumed
+        is_claimed, claimed_sid = storage_service.is_transaction_claimed(clean_ref)
+        if is_claimed:
+            safe_print(f"[CBE IMAP] Transaction '{clean_ref}' is already claimed by session '{claimed_sid}'. Skipping duplicate match.")
+            return True
+
         client = storage_service.supabase_client
         matched_session_id: Optional[str] = None
         expected_amount: float = 50.0

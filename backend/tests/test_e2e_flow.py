@@ -1,4 +1,5 @@
 import os
+import uuid
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -34,8 +35,8 @@ def test_preview_and_cbe_flow():
     assert init_res.status_code == 200
     assert init_res.json()["session_id"] == session_id
 
-    # 4. Submit transaction ID
-    txn_id = "FT260999TEST"
+    # 4. Submit unique transaction ID
+    txn_id = f"FT26{uuid.uuid4().hex[:8].upper()}"
     submit_res = client.post("/api/submit-cbe-transaction", json={
         "session_id": session_id,
         "transaction_ref": txn_id,

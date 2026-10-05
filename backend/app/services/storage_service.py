@@ -4,7 +4,7 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Tuple
 from app.config import settings
 
 class StorageService:
@@ -13,7 +13,18 @@ class StorageService:
         self.staging_dir.mkdir(parents=True, exist_ok=True)
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._preverified: Dict[str, Dict[str, Any]] = {}
+        self._consumed_txns: Dict[str, Dict[str, Any]] = {}
         self.supabase_client = self._init_supabase()
+        self._load_consumed_txns_from_disk()
+
+    def _load_consumed_txns_from_disk(self):
+        try:
+            consumed_file = self.staging_dir / "consumed_transactions.json"
+            if consumed_file.exists():
+                with open(consumed_file, "r", encoding="utf-8") as f:
+                    self._consumed_txns = json.load(f)
+        except Exception as e:
+            print(f"[StorageService] Failed to load consumed txns from disk: {e}")
 
     def _init_supabase(self):
         if settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY and "supabase.co" in settings.SUPABASE_URL:
@@ -296,6 +307,148 @@ class StorageService:
 
         return None
 
+    def is_transaction_claimed(self, txn_ref: str, current_session_id: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """
+        Anti-Replay / Double-Spending Prevention Engine:
+        Determines if a transaction ID has already been redeemed for another thesis session.
+        Returns:
+            (True, claimed_session_id) -> If already consumed by ANOTHER session (REPLAY DETECTED!)
+            (False, current_session_id or None) -> If unused or belongs to this exact session.
+        """
+        if not txn_ref:
+            return (False, None)
+
+        clean_ref = re.sub(r'[^A-Z0-9]', '', str(txn_ref).upper())
+        if not clean_ref:
+            return (False, None)
+
+        # 1. In-memory consumed registry check
+        if clean_ref in self._consumed_txns:
+            claimed_sid = self._consumed_txns[clean_ref].get("session_id")
+            if current_session_id and claimed_sid == current_session_id:
+                return (False, claimed_sid)
+            return (True, claimed_sid)
+
+        # 2. Local disk consumed_transactions.json check
+        try:
+            consumed_file = self.staging_dir / "consumed_transactions.json"
+            if consumed_file.exists():
+                with open(consumed_file, "r", encoding="utf-8") as f:
+                    disk_consumed = json.load(f)
+                    self._consumed_txns.update(disk_consumed)
+                    if clean_ref in disk_consumed:
+                        claimed_sid = disk_consumed[clean_ref].get("session_id")
+                        if current_session_id and claimed_sid == current_session_id:
+                            return (False, claimed_sid)
+                        return (True, claimed_sid)
+        except Exception:
+            pass
+
+        # 3. Check all existing sessions on disk/memory: has any other paid session used this txn ref?
+        all_sessions = self.get_all_sessions()
+        for sid, sdata in all_sessions.items():
+            if current_session_id and sid == current_session_id:
+                continue
+            if sdata.get("is_paid", False):
+                cand = sdata.get("transaction_ref") or sdata.get("tx_ref")
+                if cand:
+                    cand_clean = re.sub(r'[^A-Z0-9]', '', str(cand).upper())
+                    if cand_clean == clean_ref:
+                        # Auto-register into consumed pool
+                        self._consumed_txns[clean_ref] = {
+                            "transaction_ref": clean_ref,
+                            "session_id": sid,
+                            "claimed_at": sdata.get("paid_at", time.time())
+                        }
+                        return (True, sid)
+
+        # 4. Supabase Storage consumed_txns/{clean_ref}.json check
+        if self.supabase_client:
+            try:
+                bucket = settings.SUPABASE_BUCKET_NAME
+                res = self.supabase_client.storage.from_(bucket).download(f"consumed_txns/{clean_ref}.json")
+                if res:
+                    data = json.loads(res.decode("utf-8"))
+                    claimed_sid = data.get("session_id")
+                    self._consumed_txns[clean_ref] = data
+                    if current_session_id and claimed_sid == current_session_id:
+                        return (False, claimed_sid)
+                    return (True, claimed_sid)
+            except Exception:
+                pass
+
+        # 5. Supabase Database transactions table check (if available)
+        if self.supabase_client:
+            try:
+                query = self.supabase_client.table("transactions").select("session_id, status, transaction_ref").eq("status", "approved").ilike("transaction_ref", f"%{clean_ref}%").execute()
+                if query.data and len(query.data) > 0:
+                    for row in query.data:
+                        claimed_sid = row.get("session_id")
+                        if current_session_id and claimed_sid == current_session_id:
+                            return (False, claimed_sid)
+                        return (True, claimed_sid)
+            except Exception:
+                pass
+
+        return (False, None)
+
+    def claim_transaction(
+        self,
+        txn_ref: str,
+        session_id: str,
+        amount: float = 50.0,
+        payer_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Atomically locks and consumes a transaction ID for a single document session.
+        Prevents double-spending / multi-session reuse.
+        """
+        if not txn_ref:
+            return {}
+
+        clean_ref = re.sub(r'[^A-Z0-9]', '', str(txn_ref).upper())
+        record = {
+            "transaction_ref": clean_ref,
+            "session_id": session_id,
+            "amount": amount,
+            "payer_name": payer_name,
+            "claimed_at": time.time(),
+            "claimed_iso": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        }
+
+        # 1. Update in-memory registry
+        self._consumed_txns[clean_ref] = record
+
+        # 2. Write to persistent local disk
+        try:
+            consumed_file = self.staging_dir / "consumed_transactions.json"
+            all_consumed = {}
+            if consumed_file.exists():
+                try:
+                    with open(consumed_file, "r", encoding="utf-8") as f:
+                        all_consumed = json.load(f)
+                except Exception:
+                    all_consumed = {}
+            all_consumed[clean_ref] = record
+            with open(consumed_file, "w", encoding="utf-8") as f:
+                json.dump(all_consumed, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[StorageService] Failed to save consumed txn to disk: {e}")
+
+        # 3. Supabase Cloud Sync
+        if self.supabase_client:
+            try:
+                bucket = settings.SUPABASE_BUCKET_NAME
+                self.supabase_client.storage.from_(bucket).upload(
+                    path=f"consumed_txns/{clean_ref}.json",
+                    file=json.dumps(record, ensure_ascii=False).encode("utf-8"),
+                    file_options={"content-type": "application/json", "upsert": "true"}
+                )
+            except Exception:
+                pass
+
+        return record
+
     def get_all_sessions(self) -> Dict[str, Dict[str, Any]]:
         """
         Gathers all sessions across in-memory, disk metadata, and Supabase Storage.
@@ -317,8 +470,8 @@ class StorageService:
 
     def find_session_by_txn_ref(self, target_ref: str) -> Optional[str]:
         """
-        Searches all active sessions for matching transaction_ref / tx_ref.
-        Supports normalized alphanumeric comparison (e.g., FT260938 vs ft-260938).
+        Searches active unpaid sessions for matching transaction_ref / tx_ref.
+        Only matches sessions that are NOT already paid to prevent hijacking/replaying.
         """
         if not target_ref:
             return None
@@ -327,6 +480,8 @@ class StorageService:
         all_sessions = self.get_all_sessions()
 
         for sid, sdata in all_sessions.items():
+            if sdata.get("is_paid", False):
+                continue  # Skip already paid sessions!
             candidate = sdata.get("transaction_ref") or sdata.get("tx_ref")
             if candidate:
                 clean_cand = re.sub(r'[^A-Z0-9]', '', str(candidate).upper())
@@ -347,11 +502,20 @@ class StorageService:
                 "original_filename": "Formatted_Thesis.docx"
             }
 
+        clean_ref = re.sub(r'[^A-Z0-9]', '', str(tx_ref).upper()) if tx_ref else tx_ref
         session["is_paid"] = True
         session["status"] = "approved"
-        session["tx_ref"] = tx_ref
-        session["transaction_ref"] = tx_ref
+        session["tx_ref"] = clean_ref
+        session["transaction_ref"] = clean_ref
         session["paid_at"] = time.time()
+
+        # Atomically claim transaction ID for this session exclusively
+        self.claim_transaction(
+            txn_ref=clean_ref,
+            session_id=session_id,
+            amount=float(session.get("pricing", {}).get("total_fee", settings.BASE_FEE_ETB)),
+            payer_name=session.get("payer_name")
+        )
 
         formatted_docx = session.get("formatted_docx_path")
         file_name = session.get("original_filename", "Formatted_Thesis.docx")
