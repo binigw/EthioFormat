@@ -262,13 +262,21 @@ class StorageService:
             except Exception:
                 pass
 
-    def get_preverified_transaction(self, txn_ref: str) -> Optional[Dict[str, Any]]:
+    def get_preverified_transaction(self, txn_ref: str, current_session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Checks if a transaction reference has already been received via Gmail IMAP or Webhooks.
+        Strictly ignores receipts that are already claimed by another session.
         """
         if not txn_ref:
             return None
         clean_ref = re.sub(r'[^A-Z0-9]', '', txn_ref.upper())
+        if not clean_ref:
+            return None
+
+        # Anti-Replay: If already claimed by another session, return None!
+        is_claimed, claimed_sid = self.is_transaction_claimed(clean_ref, current_session_id=current_session_id)
+        if is_claimed:
+            return None
 
         # 1. In-memory check
         if clean_ref in self._preverified:
@@ -416,8 +424,10 @@ class StorageService:
             "claimed_iso": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         }
 
-        # 1. Update in-memory registry
+        # 1. Update in-memory registry & clear from preverified pool
         self._consumed_txns[clean_ref] = record
+        if clean_ref in self._preverified:
+            del self._preverified[clean_ref]
 
         # 2. Write to persistent local disk
         try:

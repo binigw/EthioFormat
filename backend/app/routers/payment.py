@@ -744,9 +744,11 @@ async def download_formatted_thesis(session_id: str):
     if not session.get("is_paid", False):
         is_approved = False
         if session_id in _local_transactions_db and _local_transactions_db[session_id].get("status") == "approved":
-            is_approved = True
-        elif session.get("transaction_ref") and storage_service.get_preverified_transaction(session.get("transaction_ref")):
-            is_approved = True
+            txn = _local_transactions_db[session_id].get("transaction_ref")
+            if txn:
+                is_claimed, claimed_sid = storage_service.is_transaction_claimed(txn, current_session_id=session_id)
+                if not is_claimed:
+                    is_approved = True
 
         if not is_approved:
             raise HTTPException(
