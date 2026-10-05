@@ -1,4 +1,5 @@
 import os
+import gc
 import subprocess
 import base64
 import shutil
@@ -241,6 +242,10 @@ class DocumentConverterService:
                         story.append(Spacer(1, 8))
 
         pdf_doc.build(story)
+        del doc
+        del story
+        del pdf_doc
+        gc.collect()
         return pdf_path
 
     def convert_docx_to_pdf(self, docx_path: str, output_dir: str) -> str:
@@ -284,29 +289,37 @@ class DocumentConverterService:
         1. Dynamically calculates total page count.
         2. Renders ONLY the first `max_preview_pages` (Pages 1, 2, 3) as high-res base64 PNG images.
         3. Strictly DOES NOT expose or extract pages beyond index (max_preview_pages - 1).
+        4. Memory optimized: Explicitly closes doc, deletes pixmaps, and invokes gc.collect().
         """
         doc = pymupdf.open(pdf_path)
-        total_pages = len(doc)
+        try:
+            total_pages = len(doc)
 
-        if total_pages == 0:
+            if total_pages == 0:
+                raise ValueError("The generated document has 0 pages.")
+
+            preview_images_base64: List[str] = []
+            pages_to_render = min(max_preview_pages, total_pages)
+
+            # 1.5x scale matrix for crisp 108 DPI rendering with minimal RAM footprint
+            matrix = pymupdf.Matrix(1.5, 1.5)
+
+            for page_idx in range(pages_to_render):
+                page = doc.load_page(page_idx)
+                pix = page.get_pixmap(matrix=matrix, alpha=False)
+                png_bytes = pix.tobytes(output="png")
+                b64_str = base64.b64encode(png_bytes).decode("utf-8")
+                preview_images_base64.append(f"data:image/png;base64,{b64_str}")
+                
+                # Explicit cleanup of PyMuPDF C objects per page
+                del pix
+                del page
+                del png_bytes
+        finally:
             doc.close()
-            raise ValueError("The generated document has 0 pages.")
+            del doc
+            gc.collect()
 
-        preview_images_base64: List[str] = []
-        pages_to_render = min(max_preview_pages, total_pages)
-
-        # 2x scale matrix for 144-150 DPI crisp rendering
-        matrix = pymupdf.Matrix(2.0, 2.0)
-
-        for page_idx in range(pages_to_render):
-            page = doc.load_page(page_idx)
-            pix = page.get_pixmap(matrix=matrix, alpha=False)
-            png_bytes = pix.tobytes(output="png")
-            b64_str = base64.b64encode(png_bytes).decode("utf-8")
-            data_url = f"data:image/png;base64,{b64_str}"
-            preview_images_base64.append(data_url)
-
-        doc.close()
         return total_pages, preview_images_base64
 
     def process_document_pipeline(self, formatted_docx_path: str, work_dir: str) -> Dict[str, Any]:
@@ -319,6 +332,9 @@ class DocumentConverterService:
         pdf_path = self.convert_docx_to_pdf(formatted_docx_path, work_dir)
         total_pages, preview_pages = self.generate_previews_and_page_count(pdf_path, max_preview_pages=3)
         pricing = PricingEngine.calculate_pricing(total_pages)
+
+        # Trigger garbage collection after rendering
+        gc.collect()
 
         return {
             "total_pages": total_pages,

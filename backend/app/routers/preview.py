@@ -1,4 +1,5 @@
 import os
+import gc
 import json
 import uuid
 import re
@@ -79,6 +80,7 @@ async def generate_free_preview(
 
         with open(input_docx_path, "wb") as f:
             f.write(content)
+        del content
 
         # 1. Format document with python-docx
         format_result = docx_formatter.format_document(
@@ -145,3 +147,9 @@ async def generate_free_preview(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Thesis formatting failed: {str(e)}"
         )
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+        gc.collect()

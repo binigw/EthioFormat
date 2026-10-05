@@ -1,4 +1,5 @@
 import os
+import gc
 import json
 import re
 from pathlib import Path
@@ -415,6 +416,9 @@ class DocxFormatterService:
 
         # Save formatted document
         doc.save(output_docx_path)
+        del doc
+        gc.collect()
+
         return {
             "status": "success",
             "output_path": output_docx_path,
