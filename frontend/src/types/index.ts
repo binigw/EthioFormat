@@ -79,7 +79,7 @@ export interface CBEPaymentInitiationResponse {
 }
 
 export interface SubmitCBETxnResponse {
-  status: "pending" | "approved" | "failed";
+  status: "pending" | "approved" | "failed" | "rejected";
   session_id: string;
   transaction_ref: string;
   amount_expected: number;
@@ -89,7 +89,7 @@ export interface SubmitCBETxnResponse {
 }
 
 export interface TransactionStatusResponse {
-  status: "pending" | "approved" | "failed";
+  status: "pending" | "approved" | "failed" | "rejected";
   session_id: string;
   transaction_ref?: string;
   amount_expected: number;

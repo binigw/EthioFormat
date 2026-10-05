@@ -75,7 +75,7 @@ export function BlurPaywallHook({
 
           <div className="flex flex-wrap items-center justify-center gap-4 text-[11px] text-slate-400 pt-2">
             <span className="flex items-center gap-1">
-              <ShieldCheck className="h-3.5 w-3.5 text-amber-400" /> Automated CBE Webhook
+              <ShieldCheck className="h-3.5 w-3.5 text-amber-400" /> Secured Payment Verification
             </span>
             <span>•</span>
             <span className="flex items-center gap-1">
@@ -83,7 +83,7 @@ export function BlurPaywallHook({
             </span>
             <span>•</span>
             <span className="flex items-center gap-1">
-              <Layers className="h-3.5 w-3.5 text-amber-400" /> 24h Supabase Signed Link
+              <Layers className="h-3.5 w-3.5 text-amber-400" /> Instant Document Unlock
             </span>
           </div>
         </div>

@@ -390,20 +390,22 @@ export function PaymentModal({
           <form onSubmit={handleSubmitTxn} noValidate className="space-y-4">
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
-                <span>Enter CBE Transaction ID / Reference (FT number)</span>
+                <span>Enter Transaction ID / Reference Number</span>
                 <span className="text-rose-400">*</span>
               </label>
               <input
                 type="text"
                 disabled={isSubmitting}
-                placeholder="e.g. 2798853639 or FT2609871234"
+                placeholder="e.g. FT2609871234, 2798853639, or TXN Ref"
                 value={transactionRef}
                 onChange={(e) => {
-                  setTransactionRef(e.target.value.toUpperCase());
+                  const val = e.target.value.toUpperCase();
+                  setTransactionRef(val);
+                  if (errorMessage) setErrorMessage(null);
                   if (txnInputError) setTxnInputError(null);
                 }}
                 className={`w-full px-4 py-3 text-sm font-mono font-bold tracking-wide border-2 rounded-xl focus:outline-none uppercase bg-slate-950 text-slate-100 transition-colors ${
-                  txnInputError
+                  txnInputError || errorMessage
                     ? "border-rose-500 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20"
                     : "border-purple-800 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20"
                 }`}
@@ -414,6 +416,13 @@ export function PaymentModal({
                   <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 text-rose-400" />
                   <span>{txnInputError}</span>
                 </p>
+              )}
+
+              {errorMessage && (
+                <div className="p-3 text-xs text-rose-300 bg-rose-950/60 rounded-xl border border-rose-900/80 flex items-start gap-2 mt-1.5 animate-in fade-in-50">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0 text-rose-400 mt-0.5" />
+                  <span className="leading-relaxed">{errorMessage}</span>
+                </div>
               )}
             </div>
 
@@ -442,13 +451,6 @@ export function PaymentModal({
                 />
               </div>
             </div>
-
-            {errorMessage && (
-              <div className="p-3 text-xs text-rose-300 bg-rose-950/50 rounded-xl border border-rose-900 flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 flex-shrink-0 text-rose-400" />
-                <span>{errorMessage}</span>
-              </div>
-            )}
 
             {isPolling && (
               <div className="p-3.5 text-xs text-purple-200 bg-purple-950/40 rounded-xl border border-purple-800/80 space-y-2">
@@ -488,8 +490,8 @@ export function PaymentModal({
             <div className="pt-1">
               <button
                 type="submit"
-                disabled={isSubmitting || isInitializing}
-                className="w-full py-4 px-4 bg-gradient-to-r from-purple-700 via-indigo-800 to-purple-800 hover:from-purple-800 hover:to-indigo-900 text-white font-extrabold text-sm rounded-2xl shadow-xl shadow-purple-950/50 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer border border-purple-500/30"
+                disabled={!transactionRef || !transactionRef.trim() || isSubmitting || isInitializing}
+                className="w-full py-4 px-4 bg-gradient-to-r from-purple-700 via-indigo-800 to-purple-800 hover:from-purple-800 hover:to-indigo-900 text-white font-extrabold text-sm rounded-2xl shadow-xl shadow-purple-950/50 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 cursor-pointer border border-purple-500/30"
               >
                 {isSubmitting ? (
                   <>
@@ -504,7 +506,7 @@ export function PaymentModal({
                 ) : (
                   <>
                     <Lock className="h-4 w-4 text-amber-300" />
-                    <span>Verify CBE Payment & Unlock .DOCX</span>
+                    <span>Verify Payment & Unlock .DOCX</span>
                     <ArrowRight className="h-4 w-4" />
                   </>
                 )}
@@ -514,7 +516,7 @@ export function PaymentModal({
 
           <div className="text-center text-[11px] text-slate-400 flex items-center justify-center gap-1.5">
             <ShieldCheck className="h-4 w-4 text-emerald-400" />
-            <span>Automated CBE Email Webhook Engine • 24-Hour Supabase Storage Security</span>
+            <span>Secured Payment Verification</span>
           </div>
         </div>
       </div>
