@@ -202,3 +202,41 @@ def test_security_headers_and_path_traversal():
     })
     res_unpaid = client.get(f"/api/download/{unpaid_sess}")
     assert res_unpaid.status_code == 403
+
+def test_download_dynamic_regeneration_on_missing_formatted_file():
+    """
+    Verifies that if formatted_thesis.docx is deleted/missing from disk,
+    the /api/download/{session_id} endpoint automatically re-formats input_original.docx
+    on the fly and serves the complete Word document.
+    """
+    from app.services.storage_service import storage_service
+    from create_sample import create_sample_thesis
+
+    sess_id = "sess_test_regen_998877"
+    sess_dir = storage_service.get_session_dir(sess_id)
+    input_file = sess_dir / "input_original.docx"
+    formatted_file = sess_dir / "formatted_thesis.docx"
+
+    # Create original thesis docx
+    create_sample_thesis(str(input_file))
+
+    # Mark paid but do NOT create formatted_thesis.docx
+    if formatted_file.exists():
+        formatted_file.unlink()
+
+    storage_service.register_session(sess_id, {
+        "session_id": sess_id,
+        "original_filename": "AAU_Graduation_Thesis.docx",
+        "input_docx_path": str(input_file),
+        "preset_id": "aau",
+        "is_paid": True,
+        "status": "approved"
+    })
+
+    # Call download endpoint
+    res = client.get(f"/api/download/{sess_id}")
+    assert res.status_code == 200
+    assert len(res.content) > 1000
+    assert "application/vnd.openxmlformats-officedocument" in res.headers["content-type"]
+    assert formatted_file.exists()
+

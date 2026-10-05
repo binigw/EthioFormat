@@ -61,13 +61,32 @@ class StorageService:
                 formatted_docx = data.get("formatted_docx_path")
                 if formatted_docx and Path(formatted_docx).exists():
                     with open(formatted_docx, "rb") as f_in:
+                        f_bytes = f_in.read()
                         self.supabase_client.storage.from_(bucket).upload(
                             path=f"theses/{session_id}/formatted_thesis.docx",
+                            file=f_bytes,
+                            file_options={"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "upsert": "true"}
+                        )
+                        filename_try = data.get("download_filename") or data.get("original_filename")
+                        if filename_try:
+                            if not filename_try.startswith("Formatted_"):
+                                filename_try = f"Formatted_{filename_try}"
+                            self.supabase_client.storage.from_(bucket).upload(
+                                path=f"theses/{session_id}/{filename_try}",
+                                file=f_bytes,
+                                file_options={"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "upsert": "true"}
+                            )
+
+                input_docx = data.get("input_docx_path")
+                if input_docx and Path(input_docx).exists():
+                    with open(input_docx, "rb") as f_in:
+                        self.supabase_client.storage.from_(bucket).upload(
+                            path=f"theses/{session_id}/input_original.docx",
                             file=f_in.read(),
                             file_options={"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "upsert": "true"}
                         )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Supabase Storage] Notice during register_session: {e}")
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -362,9 +381,14 @@ class StorageService:
                         pass
 
                 if file_bytes:
-                    # Upload formatted deliverable with final filename
+                    # Upload formatted deliverable with final filename AND formatted_thesis.docx
                     self.supabase_client.storage.from_(bucket_name).upload(
                         path=cloud_dest_path,
+                        file=file_bytes,
+                        file_options={"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "upsert": "true"}
+                    )
+                    self.supabase_client.storage.from_(bucket_name).upload(
+                        path=f"theses/{session_id}/formatted_thesis.docx",
                         file=file_bytes,
                         file_options={"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "upsert": "true"}
                     )

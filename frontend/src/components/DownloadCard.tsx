@@ -37,8 +37,8 @@ export function DownloadCard({ paymentData, fileName, onReset }: DownloadCardPro
   }
 
   return (
-    <div className="w-full max-w-2xl mx-auto bg-white rounded-3xl border border-emerald-200 shadow-2xl overflow-hidden animate-in fade-in-50 zoom-in-95 duration-300">
-      <div className="bg-gradient-to-r from-emerald-600 to-teal-700 px-6 py-8 text-white text-center space-y-2">
+    <div className="w-full max-w-2xl mx-auto bg-white dark:bg-slate-900 rounded-3xl border border-emerald-200 dark:border-emerald-900/60 shadow-2xl overflow-hidden animate-in fade-in-50 zoom-in-95 duration-300">
+      <div className="bg-gradient-to-r from-emerald-600 via-teal-700 to-emerald-700 px-6 py-8 text-white text-center space-y-2">
         <div className="inline-flex p-3 rounded-full bg-white/20 backdrop-blur-md mb-2 shadow-inner">
           <CheckCircle2 className="h-10 w-10 text-emerald-200" />
         </div>
@@ -50,28 +50,28 @@ export function DownloadCard({ paymentData, fileName, onReset }: DownloadCardPro
 
       <div className="p-6 sm:p-8 space-y-6">
         {/* Document Info Card */}
-        <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-between">
+        <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3 overflow-hidden">
-            <div className="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center flex-shrink-0">
+            <div className="w-12 h-12 rounded-xl bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-400 flex items-center justify-center flex-shrink-0">
               <FileCheck className="h-6 w-6" />
             </div>
             <div className="truncate">
-              <div className="font-bold text-slate-900 truncate">{paymentData.file_name || fileName}</div>
-              <div className="text-xs text-slate-500">Microsoft Word OpenXML (.docx)</div>
+              <div className="font-bold text-slate-900 dark:text-slate-100 truncate">{paymentData.file_name || fileName}</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Microsoft Word OpenXML (.docx)</div>
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold">
+          <span className="px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 text-xs font-semibold">
             Unlocked
           </span>
         </div>
 
         {/* Expiration Timer Card */}
-        <div className="flex items-center justify-between p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 text-xs text-amber-900">
+        <div className="flex items-center justify-between p-3.5 rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 text-xs text-amber-900 dark:text-amber-300">
           <div className="flex items-center gap-2">
-            <Clock className="h-4 w-4 text-amber-700 flex-shrink-0" />
+            <Clock className="h-4 w-4 text-amber-700 dark:text-amber-400 flex-shrink-0" />
             <span>Secure Download Link Active for:</span>
           </div>
-          <span className="font-mono font-bold text-amber-950 text-sm">{formatHours(timeLeft)}</span>
+          <span className="font-mono font-bold text-amber-950 dark:text-amber-200 text-sm">{formatHours(timeLeft)}</span>
         </div>
 
         {/* Primary Download CTA */}
@@ -90,15 +90,15 @@ export function DownloadCard({ paymentData, fileName, onReset }: DownloadCardPro
           <button
             type="button"
             onClick={onReset}
-            className="w-full inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 text-sm font-semibold transition-colors cursor-pointer"
+            className="w-full inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 text-sm font-semibold transition-colors cursor-pointer"
           >
             <ArrowLeft className="h-4 w-4" />
             <span>Format Another Thesis</span>
           </button>
         </div>
 
-        <div className="pt-2 border-t border-slate-100 text-center text-xs text-slate-400 flex items-center justify-center gap-1.5">
-          <ShieldCheck className="h-4 w-4 text-emerald-600" />
+        <div className="pt-2 border-t border-slate-100 dark:border-slate-800 text-center text-xs text-slate-400 flex items-center justify-center gap-1.5">
+          <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
           <span>Verified Ethiopian Academic Standard • 100% Guaranteed Layout Compliance</span>
         </div>
       </div>

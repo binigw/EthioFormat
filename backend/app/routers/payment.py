@@ -16,6 +16,7 @@ from app.models.payment import (
     CBEWebhookResponse,
     CheckTransactionStatusResponse
 )
+from app.services.docx_formatter import docx_formatter
 from app.services.storage_service import storage_service
 from app.services.pricing_engine import PricingEngine
 from app.services.cbe_email_parser import cbe_email_parser
@@ -679,7 +680,10 @@ async def check_transaction_status(session_id: str):
 async def download_formatted_thesis(session_id: str):
     """
     Direct Secure Download Endpoint (Internal Fallback):
-    Guarantees download if Supabase Storage is offline or experiencing network latency.
+    Guarantees download with multi-layer resilience:
+    1. Local staging disk cache
+    2. Supabase Cloud Storage (candidate keys: formatted_thesis.docx, download_filename, original_filename)
+    3. On-demand dynamic regeneration via docx_formatter from input_original.docx (local or cloud)
     """
     if not SAFE_ID_REGEX.match(session_id):
         raise HTTPException(status_code=400, detail="Invalid session ID.")
@@ -701,40 +705,74 @@ async def download_formatted_thesis(session_id: str):
                 detail="Payment required to download full formatted thesis."
             )
 
-    docx_path = session.get("formatted_docx_path")
-    target_path = Path(docx_path) if docx_path else (storage_service.get_session_dir(session_id) / "formatted_thesis.docx")
+    session_dir = storage_service.get_session_dir(session_id)
+    target_path = session_dir / "formatted_thesis.docx"
 
-    # Security: Ensure target file is strictly confined within staging directory
-    try:
-        staging_root = storage_service.staging_dir.resolve()
-        resolved_target = target_path.resolve()
-        if not str(resolved_target).startswith(str(staging_root)):
-            raise HTTPException(status_code=403, detail="Access denied.")
-    except HTTPException:
-        raise
-    except Exception:
-        pass
+    # Layer 1: Check if local file exists and has content
+    if not (target_path.exists() and target_path.stat().st_size > 0):
+        # Layer 2: Cloud Supabase Storage sync
+        if storage_service.supabase_client:
+            try:
+                bucket = settings.SUPABASE_BUCKET_NAME
+                filename_try = session.get("download_filename") or session.get("original_filename", "Formatted_Thesis.docx")
+                if not filename_try.startswith("Formatted_"):
+                    filename_try = f"Formatted_{filename_try}"
+                
+                cloud_candidates = [
+                    f"theses/{session_id}/formatted_thesis.docx",
+                    f"theses/{session_id}/{filename_try}",
+                    f"theses/{session_id}/{session.get('original_filename', 'thesis.docx')}"
+                ]
+                cloud_bytes = None
+                for ckey in cloud_candidates:
+                    try:
+                        cloud_bytes = storage_service.supabase_client.storage.from_(bucket).download(ckey)
+                        if cloud_bytes and len(cloud_bytes) > 0:
+                            break
+                    except Exception:
+                        continue
 
-    if not target_path.exists() and storage_service.supabase_client:
-        try:
-            bucket = settings.SUPABASE_BUCKET_NAME
-            filename_try = session.get("download_filename") or session.get("original_filename", "Formatted_Thesis.docx")
-            if not filename_try.startswith("Formatted_"):
-                filename_try = f"Formatted_{filename_try}"
-            cloud_bytes = storage_service.supabase_client.storage.from_(bucket).download(f"theses/{session_id}/{filename_try}")
-            if cloud_bytes:
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(target_path, "wb") as f_out:
-                    f_out.write(cloud_bytes)
-        except Exception as e:
-            safe_print(f"[Supabase Download Fallback] Notice: {e}")
+                if cloud_bytes and len(cloud_bytes) > 0:
+                    session_dir.mkdir(parents=True, exist_ok=True)
+                    with open(target_path, "wb") as f_out:
+                        f_out.write(cloud_bytes)
+            except Exception as e:
+                safe_print(f"[Supabase Download Fallback] Notice: {e}")
 
-    if not target_path.exists():
-        fallback_p = storage_service.get_session_dir(session_id) / "formatted_thesis.docx"
-        if fallback_p.exists():
-            target_path = fallback_p
-        else:
-            raise HTTPException(status_code=404, detail="Formatted file missing. Please regenerate.")
+    # Layer 3: On-demand dynamic regeneration from original docx if needed
+    if not (target_path.exists() and target_path.stat().st_size > 0):
+        input_path = session_dir / "input_original.docx"
+        if not (input_path.exists() and input_path.stat().st_size > 0) and storage_service.supabase_client:
+            try:
+                bucket = settings.SUPABASE_BUCKET_NAME
+                input_bytes = storage_service.supabase_client.storage.from_(bucket).download(f"theses/{session_id}/input_original.docx")
+                if input_bytes and len(input_bytes) > 0:
+                    session_dir.mkdir(parents=True, exist_ok=True)
+                    with open(input_path, "wb") as f_in:
+                        f_in.write(input_bytes)
+            except Exception as e:
+                safe_print(f"[Input Docx Recovery] Notice: {e}")
+
+        if input_path.exists() and input_path.stat().st_size > 0:
+            try:
+                preset_id = session.get("preset_id", "aau")
+                custom_rules = session.get("custom_rules")
+                docx_formatter.format_document(
+                    input_docx_path=str(input_path),
+                    output_docx_path=str(target_path),
+                    preset_id=preset_id,
+                    custom_rules=custom_rules
+                )
+                safe_print(f"[Dynamic Regeneration] Successfully generated formatted docx for {session_id} on the fly!")
+            except Exception as e:
+                safe_print(f"[Dynamic Regeneration] Error: {e}")
+
+    # Layer 4: Final verification
+    if not (target_path.exists() and target_path.stat().st_size > 0):
+        raise HTTPException(
+            status_code=404,
+            detail="Formatted file missing. Please regenerate."
+        )
 
     raw_filename = session.get("download_filename") or session.get("original_filename", "Formatted_Thesis.docx")
     clean_filename = Path(raw_filename).name
